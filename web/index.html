@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>FOMO Desk</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Syne:wght@600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div class="grain" aria-hidden="true"></div>
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark">FD</div>
+      <div>
+        <div class="brand-name">FOMO Desk</div>
+        <div class="brand-sub">holdings radar</div>
+      </div>
+    </div>
+    <nav class="nav">
+      <button id="btn-top20" class="nav-btn" type="button" data-mode="fast">
+        <span class="nav-btn-label">Fomo总榜前20</span>
+        <span class="nav-btn-hint">快速 · spotlight</span>
+      </button>
+      <button id="btn-top20-full" class="nav-btn" type="button" data-mode="full">
+        <span class="nav-btn-label">全量持仓</span>
+        <span class="nav-btn-hint">需 Privy Token</span>
+      </button>
+    </nav>
+
+    <section class="auth-box">
+      <div class="auth-title">登录态</div>
+      <div id="auth-status" class="auth-status">未配置 Token</div>
+      <textarea id="auth-token" class="auth-input" rows="4" placeholder="推荐：在 prod-api 成功请求上右键 Copy as cURL 整段粘贴&#10;或只粘贴 Bearer Token（eyJ...）"></textarea>
+      <div class="auth-actions">
+        <button id="btn-save-auth" class="auth-btn" type="button">保存</button>
+        <button id="btn-clear-auth" class="auth-btn ghost" type="button">清除</button>
+      </div>
+      <p class="auth-help">
+        必须复制<strong>状态码 200</strong>的 <code>prod-api.fomo.family</code> 请求
+        （不要复制 auth.privy.io）。右键 → Copy → <strong>Copy as cURL</strong> 整段粘贴最稳。
+        Token 约 1 小时过期。
+      </p>
+    </section>
+
+    <div class="sidebar-foot">
+      <div id="job-status" class="job-status">待命</div>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <div>
+        <h1 id="panel-title">数据区</h1>
+        <p id="panel-note" class="panel-note">点击左侧按钮拉取数据；全量模式使用官方 balances 接口</p>
+      </div>
+      <div class="topbar-meta">
+        <div id="mode-chip" class="meta-chip">mode —</div>
+        <div id="updated-at" class="meta-chip">—</div>
+        <div id="token-count" class="meta-chip">0 tokens</div>
+      </div>
+    </header>
+
+    <section class="table-shell">
+      <div id="empty-state" class="empty-state">
+        <p>尚未加载数据</p>
+        <p class="empty-sub">快速模式无需登录；全量模式需配置 Token</p>
+      </div>
+      <div class="table-scroll hidden" id="table-wrap">
+        <table id="data-table">
+          <thead></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div id="loading-overlay" class="loading-overlay hidden">
+        <div class="loading-card">
+          <div class="spinner"></div>
+          <div id="loading-text">正在拉取…</div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

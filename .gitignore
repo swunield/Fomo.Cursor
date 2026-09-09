@@ -1,0 +1,13 @@
+fomo_auth.json
+__pycache__/
+*.pyc
+.tmp_fomo_js/
+tmp_fomo_js/
+*.csv.tmp
+.DS_Store
+tmp_*.txt
+tmp_*.json
+tmp_curl.txt
+tmp_balances*.json
+tmp_profile_unipcs.html
+probe_*.py
