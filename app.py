@@ -42,13 +42,14 @@ class AuthPayload(BaseModel):
 
 class RefreshPayload(BaseModel):
     mode: str = Field(default="fast", description="fast | full")
-    board: str = Field(default="all", description="all | 7d")
+    board: str = Field(default="all", description="all | 7d | 24h")
     limit: int | None = Field(default=None, description="override top-N for this run")
 
 
 class SettingsPayload(BaseModel):
     allLimit: int | None = Field(default=None, description="总榜人数")
-    dayLimit: int | None = Field(default=None, description="日榜/7日榜人数")
+    dayLimit: int | None = Field(default=None, description="7日榜人数")
+    h24Limit: int | None = Field(default=None, description="24小时榜人数")
 
 
 def _normalize_board(board: str | None) -> str:
@@ -130,17 +131,23 @@ def api_settings_get():
         **s,
         "allLabel": f"总榜前{s['allLimit']}",
         "dayLabel": f"7日榜前{s['dayLimit']}",
+        "h24Label": f"24小时榜前{s['h24Limit']}",
     }
 
 
 @app.post("/api/settings")
 def api_settings_save(payload: SettingsPayload):
-    s = save_settings(all_limit=payload.allLimit, day_limit=payload.dayLimit)
+    s = save_settings(
+        all_limit=payload.allLimit,
+        day_limit=payload.dayLimit,
+        h24_limit=payload.h24Limit,
+    )
     return {
         "ok": True,
         **s,
         "allLabel": f"总榜前{s['allLimit']}",
         "dayLabel": f"7日榜前{s['dayLimit']}",
+        "h24Label": f"24小时榜前{s['h24Limit']}",
     }
 
 

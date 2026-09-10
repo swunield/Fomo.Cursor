@@ -338,6 +338,54 @@ def parse_balance_item(item: dict) -> dict | None:
         or token_meta.get("createdAt")
         or (token_meta.get("info") or {}).get("createdAt")
     )
+    holding_since = (
+        user_token.get("holdingSince")
+        or trade.get("createdAt")
+        or ""
+    )
+    position_updated_at = (
+        trade.get("updatedAt")
+        or user_token.get("updatedAt")
+        or ""
+    )
+
+    valuation = item.get("valuation") if isinstance(item.get("valuation"), dict) else {}
+    entry = _f(
+        user_token.get("averageEntryPriceUsd")
+        or trade.get("avgEntryPrice")
+        or valuation.get("avgEntryPriceUsd")
+        or valuation.get("entryPriceUsd")
+    )
+    cost = _f(
+        user_token.get("currentCostBasisUsd")
+        or user_token.get("totalCostBasisUsd")
+        or valuation.get("currentCostBasisUsd")
+    )
+    if cost <= 0 and entry > 0 and amount > 0:
+        cost = amount * entry
+
+    pnl_usd = None
+    for key in (
+        "unrealizedPnlUsd",
+        "unrealizedPnl",
+        "pnlUsd",
+        "profitUsd",
+    ):
+        if valuation.get(key) not in (None, ""):
+            pnl_usd = _f(valuation.get(key))
+            break
+        if key.startswith("unrealized") and trade.get(key) not in (None, ""):
+            pnl_usd = _f(trade.get(key))
+            break
+    pnl_pct = None
+    if cost > 0:
+        if pnl_usd is None:
+            pnl_usd = value - cost
+        pnl_pct = pnl_usd / cost * 100.0
+    elif pnl_usd is not None and value > 0:
+        inferred_cost = value - pnl_usd
+        if inferred_cost > 0:
+            pnl_pct = pnl_usd / inferred_cost * 100.0
 
     return {
         "tokenAddress": addr,
@@ -351,6 +399,11 @@ def parse_balance_item(item: dict) -> dict | None:
         "volume24": volume24,
         "change24": change24,
         "createdAt": created_at,
+        "holdingSince": str(holding_since or "").strip(),
+        "positionUpdatedAt": str(position_updated_at or "").strip(),
+        "entryPriceUsd": entry,
+        "pnlUsd": pnl_usd,
+        "pnlPct": pnl_pct,
         "launchpadIconUrl": launchpad.get("launchpadIconUrl") or "",
     }
 

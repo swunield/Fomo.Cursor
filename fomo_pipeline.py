@@ -17,6 +17,7 @@ from update_token_marketcap import (
     CSV_PATH,
     JSON_PATH,
     MD_PATH,
+    fmt_holder_detail_line,
     fmt_holding_with_mcap_pct,
     fmt_km,
     get_json,
@@ -36,11 +37,16 @@ LAST_RESULT_7D_PATH = ROOT / "fomo_7d50_last_result.json"
 JSON_7D_PATH = ROOT / "fomo_7d50_holdings_by_token.json"
 CSV_7D_PATH = ROOT / "fomo_7d50_holdings_by_token.csv"
 MD_7D_PATH = ROOT / "fomo_7d50_holdings_by_token.md"
+LAST_RESULT_24H_PATH = ROOT / "fomo_24h_last_result.json"
+JSON_24H_PATH = ROOT / "fomo_24h_holdings_by_token.json"
+CSV_24H_PATH = ROOT / "fomo_24h_holdings_by_token.csv"
+MD_24H_PATH = ROOT / "fomo_24h_holdings_by_token.md"
 SETTINGS_PATH = ROOT / "fomo_settings.json"
 
 DEFAULT_SETTINGS = {
     "allLimit": 20,
     "dayLimit": 50,
+    "h24Limit": 50,
 }
 LIMIT_MIN = 1
 LIMIT_MAX = 200
@@ -63,6 +69,15 @@ BOARD_CONFIG = {
         "jsonPath": JSON_7D_PATH,
         "csvPath": CSV_7D_PATH,
         "mdPath": MD_7D_PATH,
+    },
+    "24h": {
+        "boardKey": "24h",
+        "limit": 50,
+        "label": "24小时榜",
+        "lastResult": LAST_RESULT_24H_PATH,
+        "jsonPath": JSON_24H_PATH,
+        "csvPath": CSV_24H_PATH,
+        "mdPath": MD_24H_PATH,
     },
 }
 
@@ -142,18 +157,25 @@ def load_settings() -> dict:
     return {
         "allLimit": clamp_limit(data.get("allLimit"), DEFAULT_SETTINGS["allLimit"]),
         "dayLimit": clamp_limit(data.get("dayLimit"), DEFAULT_SETTINGS["dayLimit"]),
+        "h24Limit": clamp_limit(
+            data.get("h24Limit", data.get("hourLimit")),
+            DEFAULT_SETTINGS["h24Limit"],
+        ),
     }
 
 
 def save_settings(
     all_limit: Any = None,
     day_limit: Any = None,
+    h24_limit: Any = None,
 ) -> dict:
     cur = load_settings()
     if all_limit is not None:
         cur["allLimit"] = clamp_limit(all_limit, cur["allLimit"])
     if day_limit is not None:
         cur["dayLimit"] = clamp_limit(day_limit, cur["dayLimit"])
+    if h24_limit is not None:
+        cur["h24Limit"] = clamp_limit(h24_limit, cur["h24Limit"])
     SETTINGS_PATH.write_text(
         json.dumps(cur, ensure_ascii=False, indent=2), encoding="utf-8"
     )
@@ -161,14 +183,25 @@ def save_settings(
 
 
 def resolve_board(board: str, limit: int | None = None) -> dict:
-    key = "7d" if board in ("7d", "7day", "week") else "all"
+    b = (board or "all").strip().lower()
+    if b in ("7d", "7day", "week"):
+        key = "7d"
+    elif b in ("24h", "24", "day", "1d", "h24"):
+        key = "24h"
+    else:
+        key = "all"
     base = BOARD_CONFIG[key]
     settings = load_settings()
-    default_limit = (
-        settings["dayLimit"] if key == "7d" else settings["allLimit"]
-    )
+    if key == "7d":
+        default_limit = settings["dayLimit"]
+        short = "7日榜"
+    elif key == "24h":
+        default_limit = settings["h24Limit"]
+        short = "24小时榜"
+    else:
+        default_limit = settings["allLimit"]
+        short = "总榜"
     n = clamp_limit(limit if limit is not None else default_limit, default_limit)
-    short = "7日榜" if key == "7d" else "总榜"
     return {
         **base,
         "limit": n,
@@ -224,9 +257,15 @@ def _traders_from_fomo_api(period: str, limit: int) -> list[dict]:
         handle = (r.get("userHandle") or r.get("handle") or "").strip()
         name = (r.get("displayName") or r.get("name") or handle).strip()
         uid = (r.get("id") or r.get("userId") or r.get("uid") or "").strip()
-        pnl = r.get("pnl7d") if period == "7d" else r.get("pnl")
+        pnl = None
+        if period == "7d":
+            pnl = r.get("pnl7d")
+        elif period == "24h":
+            pnl = r.get("pnl24h")
+        else:
+            pnl = r.get("pnl")
         if pnl is None:
-            pnl = r.get("pnlAllTime") or r.get("totalPnl") or 0
+            pnl = r.get("pnlAllTime") or r.get("totalPnl") or r.get("pnl") or 0
         traders.append(
             {
                 "rank": int(r.get("rank") or i + 1),
@@ -255,17 +294,19 @@ def fetch_traders(
     if progress:
         progress(f"正在拉取 FOMO {cfg['label']}…")
 
-    # 7d: prefer official authenticated API (full top50+); fallback 985monitor.
-    if board_key == "7d":
+    # Period boards: prefer official authenticated API; 7d can fallback 985monitor.
+    if board_key in ("7d", "24h"):
         try:
-            traders = _traders_from_fomo_api("7d", limit)
+            traders = _traders_from_fomo_api(board_key, limit)
             if progress:
-                progress(f"官方7日榜已拉取 {len(traders)} 人")
+                progress(f"官方{cfg['shortLabel']}已拉取 {len(traders)} 人")
             return traders
         except Exception as exc:
-            if progress:
-                progress(f"官方7日榜失败，回退 985monitor：{exc}")
-            return _traders_from_985("7d", limit)
+            if board_key == "7d":
+                if progress:
+                    progress(f"官方7日榜失败，回退 985monitor：{exc}")
+                return _traders_from_985("7d", limit)
+            raise
 
     return _traders_from_985(board_key, limit)
 
@@ -413,6 +454,10 @@ def collect_open_holdings(
                         "change24": h.get("change24"),
                         "priceUsd": float(h.get("priceUsd") or 0),
                         "createdAt": h.get("createdAt") or "",
+                        "holdingSince": h.get("holdingSince") or "",
+                        "positionUpdatedAt": h.get("positionUpdatedAt") or "",
+                        "pnlUsd": h.get("pnlUsd"),
+                        "pnlPct": h.get("pnlPct"),
                     }
                 )
                 stats["holdingRows"] += 1
@@ -441,6 +486,13 @@ def _apply_meta_to_token_map(token_map: dict[str, list[dict]], holding: dict) ->
             entry["rawName"] = holding["name"]
         if holding.get("createdAt") and not entry.get("createdAt"):
             entry["createdAt"] = holding["createdAt"]
+        if holding.get("holdingSince") and not entry.get("holdingSince"):
+            entry["holdingSince"] = holding["holdingSince"]
+        if holding.get("positionUpdatedAt") and not entry.get("positionUpdatedAt"):
+            entry["positionUpdatedAt"] = holding["positionUpdatedAt"]
+        if holding.get("pnlUsd") is not None and entry.get("pnlUsd") is None:
+            entry["pnlUsd"] = holding.get("pnlUsd")
+            entry["pnlPct"] = holding.get("pnlPct")
 
 
 def backfill_missing_token_meta(
@@ -581,8 +633,17 @@ def aggregate_rows(
             display = symbol or name or (sample.get("symbol") or addr[:10])
 
         holder_details = [
-            f"{h['rank']}.{h['name']} {fmt_holding_with_mcap_pct(h['value'], current_mcap)}"
-            for h in holders
+            fmt_holder_detail_line(
+                h["rank"],
+                h["name"],
+                h["value"],
+                current_mcap,
+                holding_since=h.get("holdingSince") or "",
+                position_updated_at=h.get("positionUpdatedAt") or "",
+                pnl_usd=h.get("pnlUsd"),
+                pnl_pct=h.get("pnlPct"),
+            )
+            for h in sorted(holders, key=lambda x: float(x.get("value") or 0), reverse=True)
         ]
         network_id = meta.get("networkId") if meta.get("networkId") is not None else sample.get("networkId")
         row = {
@@ -781,9 +842,10 @@ def run_pipeline(
             "行情用本地缓存。"
         )
     src = (traders[0].get("source") if traders else "") or ""
-    if cfg["boardKey"] == "7d":
+    if cfg["boardKey"] in ("7d", "24h"):
+        api_path = f"/v2/leaderboard/{cfg['boardKey']}"
         if src == "fomo-api":
-            note += f" 榜单来自官方 /v2/leaderboard/7d（{len(traders)}人）。"
+            note += f" 榜单来自官方 {api_path}（{len(traders)}人）。"
         elif len(traders) < cfg["limit"]:
             limitation += f" 数据源当前仅返回 {len(traders)} 名交易员（目标前{cfg['limit']}）。"
             note += f" 当前源提供 {len(traders)}/{cfg['limit']} 名交易员。"

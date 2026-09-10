@@ -7,7 +7,7 @@ import ssl
 import time
 import urllib.error
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 OUT = Path(__file__).resolve().parent
@@ -558,6 +558,116 @@ def fmt_holding_with_mcap_pct(holding_value, market_cap):
     return f"{value_text}({pct_text})"
 
 
+def fmt_signed_km(value):
+    num = parse_number(value)
+    if num is None:
+        return ""
+    text = fmt_km(num)
+    if num > 0 and text and not text.startswith("+"):
+        return f"+{text}"
+    return text
+
+
+def fmt_pnl_with_pct(pnl_usd, pnl_pct) -> str:
+    """Format open PnL as '+1.2M(+23.45%)' / '-500K(-12.30%)'."""
+    if pnl_usd is None or pnl_usd == "":
+        return ""
+    try:
+        pnl_usd = float(pnl_usd)
+    except (TypeError, ValueError):
+        return ""
+    amt = fmt_signed_km(pnl_usd)
+    if not amt:
+        return ""
+    if pnl_pct is None or pnl_pct == "":
+        return amt
+    try:
+        pct = float(pnl_pct)
+    except (TypeError, ValueError):
+        return amt
+    return f"{amt}({pct:+.2f}%)"
+
+
+def _parse_dt(value):
+    if value in (None, ""):
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(text)
+    except ValueError:
+        try:
+            ts = float(text)
+            if ts > 1e12:
+                ts /= 1000.0
+            return datetime.fromtimestamp(ts, tz=timezone.utc)
+        except (TypeError, ValueError, OSError, OverflowError):
+            return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def fmt_hold_duration(since_value, now=None) -> str:
+    """Holding duration as '[DD:HH:MM]' (zero-padded)."""
+    start = _parse_dt(since_value)
+    if not start:
+        return ""
+    end = now or datetime.now(timezone.utc)
+    if end.tzinfo is None:
+        end = end.replace(tzinfo=timezone.utc)
+    secs = int((end - start.astimezone(timezone.utc)).total_seconds())
+    if secs < 0:
+        secs = 0
+    days = secs // 86400
+    hours = (secs % 86400) // 3600
+    mins = (secs % 3600) // 60
+    return f"[{days:02d}:{hours:02d}:{mins:02d}]"
+
+
+def fmt_position_updated_at(value) -> str:
+    """Local time as 'YYYYMMDD HH:MM' (Asia/Shanghai)."""
+    dt = _parse_dt(value)
+    if not dt:
+        return ""
+    try:
+        from zoneinfo import ZoneInfo
+
+        local = dt.astimezone(ZoneInfo("Asia/Shanghai"))
+    except Exception:
+        local = dt.astimezone(timezone(timedelta(hours=8)))
+    return local.strftime("%Y%m%d %H:%M")
+
+
+def fmt_holder_detail_line(
+    rank,
+    name,
+    holding_value,
+    market_cap,
+    holding_since="",
+    position_updated_at="",
+    pnl_usd=None,
+    pnl_pct=None,
+) -> str:
+    base = f"{rank}.{name} {fmt_holding_with_mcap_pct(holding_value, market_cap)}"
+    parts = [base]
+    pnl = fmt_pnl_with_pct(pnl_usd, pnl_pct)
+    if pnl:
+        parts.append(pnl)
+    dur = fmt_hold_duration(holding_since)
+    if dur:
+        parts.append(dur)
+    upd = fmt_position_updated_at(position_updated_at)
+    if upd:
+        parts.append(f"[{upd}]")
+    return " ".join(parts)
+
+
 def parse_holders(text):
     items = []
     for rank, name in re.findall(r"(\d+)\.(.+?)(?=\s+\d+\.|$)", str(text or "").strip()):
@@ -576,12 +686,17 @@ def holder_label(value, holders):
 
 
 def parse_holder_detail_line(line: str):
-    """Parse '1.Name 6.2M(1.57%)' -> (rank, name, value_text) or None."""
+    """Parse '1.Name 6.2M(1.57%) …' -> (rank, name, value_text, suffix) or None."""
     text = str(line or "").strip()
-    m = re.match(r"^(\d+)\.(.+?)\s+(\S+\([^)]*\))\s*$", text)
+    m = re.match(r"^(\d+)\.(.+?)\s+(\S+\([^)]*\))(?:\s+(.*))?$", text)
     if not m:
         return None
-    return int(m.group(1)), m.group(2).strip(), m.group(3).strip()
+    return (
+        int(m.group(1)),
+        m.group(2).strip(),
+        m.group(3).strip(),
+        (m.group(4) or "").strip(),
+    )
 
 
 def normalize_row_display(row):
@@ -596,8 +711,9 @@ def normalize_row_display(row):
         for line in details:
             parsed = parse_holder_detail_line(line)
             if parsed:
-                rank, name, val = parsed
-                cleaned.append(f"{rank}.{name} {val}")
+                rank, name, val, suffix = parsed
+                extra = f" {suffix}" if suffix else ""
+                cleaned.append(f"{rank}.{name} {val}{extra}")
                 name_labels.append(f"{rank}.{name}")
             else:
                 # already 'rank.name' only

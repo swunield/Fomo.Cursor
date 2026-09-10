@@ -50,11 +50,12 @@ const FILTER_FIELDS = [
   { key: "countMax", id: "flt-count-max" },
 ];
 
-const boardSettings = { allLimit: 20, dayLimit: 50 };
+const boardSettings = { allLimit: 20, dayLimit: 50, h24Limit: 50 };
 
 const btnFast = document.getElementById("btn-top20");
 const btn7d = document.getElementById("btn-7d");
-const navButtons = [btnFast, btn7d].filter(Boolean);
+const btn24h = document.getElementById("btn-24h");
+const navButtons = [btnFast, btn7d, btn24h].filter(Boolean);
 const jobStatus = document.getElementById("job-status");
 const panelTitle = document.getElementById("panel-title");
 const panelNote = document.getElementById("panel-note");
@@ -77,9 +78,11 @@ const filterSummary = document.getElementById("filter-summary");
 const rowTip = document.getElementById("row-tip");
 const setAllLimit = document.getElementById("set-all-limit");
 const setDayLimit = document.getElementById("set-day-limit");
+const setH24Limit = document.getElementById("set-h24-limit");
 const btnSaveSettings = document.getElementById("btn-save-settings");
 const hintAllFast = document.getElementById("hint-all-fast");
 const hint7dFast = document.getElementById("hint-7d-fast");
+const hint24hFast = document.getElementById("hint-24h-fast");
 
 let pollTimer = null;
 let activeMode = "fast";
@@ -119,22 +122,37 @@ function shortenTime(val) {
   return s;
 }
 
+function normalizeBoard(board) {
+  if (board === "7d") return "7d";
+  if (board === "24h") return "24h";
+  return "all";
+}
+
 function boardLimit(board) {
-  return board === "7d" ? boardSettings.dayLimit : boardSettings.allLimit;
+  const b = normalizeBoard(board);
+  if (b === "7d") return boardSettings.dayLimit;
+  if (b === "24h") return boardSettings.h24Limit;
+  return boardSettings.allLimit;
 }
 
 function boardLabel(board) {
-  const n = boardLimit(board);
-  return board === "7d" ? `7日榜前${n}` : `总榜前${n}`;
+  const b = normalizeBoard(board);
+  const n = boardLimit(b);
+  if (b === "7d") return `7日榜前${n}`;
+  if (b === "24h") return `24小时榜前${n}`;
+  return `总榜前${n}`;
 }
 
 function applySettingsToUi(s) {
   boardSettings.allLimit = Number(s.allLimit) || 20;
   boardSettings.dayLimit = Number(s.dayLimit) || 50;
+  boardSettings.h24Limit = Number(s.h24Limit) || 50;
   if (setAllLimit) setAllLimit.value = String(boardSettings.allLimit);
   if (setDayLimit) setDayLimit.value = String(boardSettings.dayLimit);
+  if (setH24Limit) setH24Limit.value = String(boardSettings.h24Limit);
   if (hintAllFast) hintAllFast.textContent = `前${boardSettings.allLimit}`;
   if (hint7dFast) hint7dFast.textContent = `前${boardSettings.dayLimit}`;
+  if (hint24hFast) hint24hFast.textContent = `前${boardSettings.h24Limit}`;
 }
 
 async function loadSettings() {
@@ -150,19 +168,22 @@ async function loadSettings() {
 async function saveBoardSettings() {
   const allLimit = Number(setAllLimit?.value);
   const dayLimit = Number(setDayLimit?.value);
+  const h24Limit = Number(setH24Limit?.value);
   const res = await fetch("/api/settings", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ allLimit, dayLimit }),
+    body: JSON.stringify({ allLimit, dayLimit, h24Limit }),
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok || !data.ok) throw new Error(data.detail || data.message || "保存设置失败");
   applySettingsToUi(data);
-  setJobStatus(`设置已保存 · 总榜前${data.allLimit} / 日榜前${data.dayLimit}`);
+  setJobStatus(
+    `设置已保存 · 总榜前${data.allLimit} / 7日前${data.dayLimit} / 24h前${data.h24Limit}`
+  );
 }
 
 function setActiveButton(board) {
-  activeBoard = board === "7d" ? "7d" : "all";
+  activeBoard = normalizeBoard(board);
   activeMode = "fast";
   navButtons.forEach((btn) => {
     if (!btn) return;
@@ -203,6 +224,7 @@ function parseNumber(value) {
   if (!text || text === "-") return null;
   text = text.replace(/\([^)]*\)$/, "");
   if (text.endsWith("%")) text = text.slice(0, -1);
+  text = text.replace(/^\+/, "");
   let multiplier = 1;
   const upper = text.toUpperCase();
   if (upper.endsWith("B")) {
@@ -371,7 +393,7 @@ function renderTable(payload) {
     `${label}：登录态用 balances 实时开仓；未登录才用 spotlight（可能滞后）。`;
   updatedAt.textContent = `更新 ${formatTime(payload.updatedAt)}`;
   tokenCount.textContent = filtered ? `${rows.length}/${total} tokens` : `${payload.tokenCount || rows.length} tokens`;
-  modeChip.textContent = board === "7d" ? "7d" : "all";
+  modeChip.textContent = normalizeBoard(board);
   setActiveButton(board);
   updateFilterSummary(rows.length, total, filtered);
 
@@ -405,6 +427,13 @@ function renderTable(payload) {
           if (c === "创建时间") val = shortenTime(val);
           let cls = "";
           if (NUM_COLS.has(c)) cls = "num";
+          if (c === "24h涨跌") {
+            const n = parseNumber(val);
+            cls = "num chg";
+            if (n != null && n > 0) cls += " chg-up";
+            else if (n != null && n < 0) cls += " chg-down";
+            else cls += " chg-flat";
+          }
           if (c === "所有持仓人") {
             cls = "holders";
             val = holdersTableText(val);
@@ -482,37 +511,63 @@ function holdersTableText(val) {
     : null;
   if (lines) {
     return lines
-      .map((line) => line.replace(/\s+\S+\([^)]*\)\s*$/, "").trim())
+      .map((line) => line.replace(/\s+\S+\([^)]*\).*$/, "").trim())
       .filter(Boolean)
       .join(" ");
   }
-  return text.replace(/(\d+\..+?)\s+\S+\([^)]*\)/g, "$1").replace(/\s+/g, " ").trim();
+  return text.replace(/(\d+\..+?)\s+\S+\([^)]*\).*/g, "$1").replace(/\s+/g, " ").trim();
+}
+
+function parseHolderTipParts(line) {
+  const text = String(line || "").trim();
+  const m = text.match(
+    /^(\d+\..+?)\s+(\S+\([^)]*\))(?:\s+([+\-]?[\d.]+[KMB]?\([+\-]?\d+(?:\.\d+)?%\)))?(?:\s+(\[\d+:\d{2}:\d{2}\]))?(?:\s+(\[\d{8}\s+\d{2}:\d{2}\]))?\s*$/i
+  );
+  if (!m) {
+    return { who: text, hold: "", pnl: "", dur: "", upd: "" };
+  }
+  return {
+    who: m[1] || "",
+    hold: m[2] || "",
+    pnl: m[3] || "",
+    dur: m[4] || "",
+    upd: m[5] || "",
+  };
+}
+
+function renderHolderTipRow(line) {
+  const parts = parseHolderTipParts(line);
+  const n = parts.pnl ? parseNumber(parts.pnl) : null;
+  let pnlCls = "tip-col tip-pnl chg-flat";
+  if (n != null && n > 0) pnlCls = "tip-col tip-pnl chg-up";
+  else if (n != null && n < 0) pnlCls = "tip-col tip-pnl chg-down";
+  return `<div class="row-tip-holder-row">
+    <span class="tip-col tip-who">${escapeHtml(parts.who)}</span>
+    <span class="tip-col tip-hold">${escapeHtml(parts.hold)}</span>
+    <span class="${pnlCls}">${escapeHtml(parts.pnl)}</span>
+    <span class="tip-col tip-dur">${escapeHtml(parts.dur)}</span>
+    <span class="tip-col tip-upd">${escapeHtml(parts.upd)}</span>
+  </div>`;
 }
 
 function showRowTip(row, tr, clientX, clientY) {
   const name = row["名称"] || "—";
   const platform = row["发射平台"] || "—";
   const createdAt = shortenTime(row["创建时间"]) || "—";
-  const hiPerson = row["最高持仓人"] || "—";
-  const hiVal = row["最高持仓市值"] || "—";
-  const loPerson = row["最低持仓人"] || "—";
-  const loVal = row["最低持仓市值"] || "—";
   const holderLines = holderTipLines(row);
 
   tbody.querySelectorAll("tr.tip-active").forEach((el) => el.classList.remove("tip-active"));
   tr.classList.add("tip-active");
   tipRowIndex = Number(tr.dataset.rowIdx);
 
-  const holdersHtml = holderLines
-    .map((line) => `<div class="row-tip-holder">${escapeHtml(line)}</div>`)
-    .join("");
+  const holdersHtml = holderLines.length
+    ? `<div class="row-tip-holder-grid">${holderLines.map(renderHolderTipRow).join("")}</div>`
+    : `<div class="row-tip-holder">—</div>`;
 
   rowTip.innerHTML = `
     <div class="row-tip-line row-tip-name">${escapeHtml(String(name))}</div>
     <div class="row-tip-line"><span class="row-tip-label">平台</span>${escapeHtml(String(platform))}</div>
     <div class="row-tip-line"><span class="row-tip-label">创建时间</span>${escapeHtml(String(createdAt))}</div>
-    <div class="row-tip-line"><span class="row-tip-label">最高</span>${escapeHtml(`${hiPerson}  ${hiVal}`)}</div>
-    <div class="row-tip-line"><span class="row-tip-label">最低</span>${escapeHtml(`${loPerson}  ${loVal}`)}</div>
     <div class="row-tip-line">
       <span class="row-tip-label">全部</span>
       <div class="row-tip-holders">${holdersHtml}</div>
@@ -666,7 +721,7 @@ async function pollUntilDone() {
 }
 
 async function refreshBoard(board) {
-  activeBoard = board === "7d" ? "7d" : "all";
+  activeBoard = normalizeBoard(board);
   activeMode = "fast";
   setActiveButton(activeBoard);
   const limit = boardLimit(activeBoard);
@@ -691,8 +746,9 @@ async function refreshBoard(board) {
   }
 }
 
-btnFast.addEventListener("click", () => refreshBoard("all"));
-btn7d.addEventListener("click", () => refreshBoard("7d"));
+btnFast?.addEventListener("click", () => refreshBoard("all"));
+btn7d?.addEventListener("click", () => refreshBoard("7d"));
+btn24h?.addEventListener("click", () => refreshBoard("24h"));
 btnSaveAuth.addEventListener("click", () => saveAuth().catch((e) => setJobStatus(String(e), "error")));
 btnClearAuth.addEventListener("click", () => clearAuth().catch((e) => setJobStatus(String(e), "error")));
 btnSaveSettings.addEventListener("click", () =>
@@ -705,7 +761,7 @@ for (const f of FILTER_FIELDS) {
     if (e.key === "Enter") applyFilters();
   });
 }
-[setAllLimit, setDayLimit].forEach((el) => {
+[setAllLimit, setDayLimit, setH24Limit].forEach((el) => {
   if (!el) return;
   el.addEventListener("keydown", (e) => {
     if (e.key === "Enter") {
