@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Update token market cap columns in fomo_top20_holdings_by_token.csv."""
 import csv
+import http.client
 import json
 import re
 import ssl
@@ -89,6 +90,11 @@ def get_json(url, data=None, headers=None, timeout=40, retries=2):
         except urllib.error.HTTPError as exc:
             if exc.code == 429 and attempt < retries:
                 time.sleep(5 * (attempt + 1))
+                continue
+            raise
+        except (TimeoutError, urllib.error.URLError, http.client.IncompleteRead, OSError) as exc:
+            if attempt < retries:
+                time.sleep(1.5 * (attempt + 1))
                 continue
             raise
 

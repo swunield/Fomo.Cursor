@@ -211,7 +211,32 @@ def resolve_board(board: str, limit: int | None = None) -> dict:
 
 
 def _traders_from_985(board_key: str, limit: int) -> list[dict]:
-    data = get_json("https://985monitor.xyz/fomo-leaderboards.json", retries=2)
+    data = None
+    last_err: Exception | None = None
+    # 985 JSON 经 Cloudflare chunked 传输，urllib 易 IncompleteRead/超时；优先 curl_cffi
+    try:
+        from curl_cffi import requests as crequests
+
+        resp = crequests.get(
+            "https://985monitor.xyz/fomo-leaderboards.json",
+            impersonate="chrome110",
+            timeout=90,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as exc:
+        last_err = exc
+        try:
+            data = get_json(
+                "https://985monitor.xyz/fomo-leaderboards.json",
+                timeout=90,
+                retries=3,
+            )
+        except Exception as exc2:
+            last_err = exc2
+            data = None
+    if not isinstance(data, dict):
+        raise RuntimeError(f"985monitor leaderboard failed: {last_err}")
     rows = (data.get("boards") or {}).get(board_key) or []
     traders = []
     for r in rows[:limit]:
@@ -231,12 +256,18 @@ def _traders_from_985(board_key: str, limit: int) -> list[dict]:
 
 
 def _traders_from_fomo_api(period: str, limit: int) -> list[dict]:
-    """Official FOMO leaderboard, e.g. GET /v2/leaderboard/7d."""
+    """Official FOMO leaderboard.
+
+    - all  → GET /v2/leaderboard  (totalPnL)
+    - 7d   → GET /v2/leaderboard/7d
+    - 24h  → GET /v2/leaderboard/24h
+    """
     from fomo_auth import fomo_get, get_access_token
 
     if not get_access_token():
         raise RuntimeError("未配置 Privy Token，无法调用官方榜单")
-    data = fomo_get(f"/v2/leaderboard/{period}")
+    path = "/v2/leaderboard" if period == "all" else f"/v2/leaderboard/{period}"
+    data = fomo_get(path, timeout=60)
     status = data.get("statusCode")
     if data.get("error") or status in (401, 403, 430, 431) or data.get("success") is False:
         err = data.get("error") or data.get("message") or f"HTTP {status}"
@@ -262,10 +293,12 @@ def _traders_from_fomo_api(period: str, limit: int) -> list[dict]:
             pnl = r.get("pnl7d")
         elif period == "24h":
             pnl = r.get("pnl24h")
+        elif period == "all":
+            pnl = r.get("totalPnL") or r.get("totalPnl") or r.get("pnlAllTime")
         else:
             pnl = r.get("pnl")
         if pnl is None:
-            pnl = r.get("pnlAllTime") or r.get("totalPnl") or r.get("pnl") or 0
+            pnl = r.get("pnlAllTime") or r.get("totalPnL") or r.get("totalPnl") or r.get("pnl") or 0
         traders.append(
             {
                 "rank": int(r.get("rank") or i + 1),
@@ -294,18 +327,18 @@ def fetch_traders(
     if progress:
         progress(f"正在拉取 FOMO {cfg['label']}…")
 
-    # Period boards: prefer official authenticated API; 7d can fallback 985monitor.
-    if board_key in ("7d", "24h"):
+    # Prefer official authenticated API; all/7d can fallback to 985monitor.
+    if board_key in ("all", "7d", "24h"):
         try:
             traders = _traders_from_fomo_api(board_key, limit)
             if progress:
                 progress(f"官方{cfg['shortLabel']}已拉取 {len(traders)} 人")
             return traders
         except Exception as exc:
-            if board_key == "7d":
+            if board_key in ("all", "7d"):
                 if progress:
-                    progress(f"官方7日榜失败，回退 985monitor：{exc}")
-                return _traders_from_985("7d", limit)
+                    progress(f"官方{cfg['shortLabel']}失败，回退 985monitor：{exc}")
+                return _traders_from_985(board_key, limit)
             raise
 
     return _traders_from_985(board_key, limit)
@@ -842,8 +875,12 @@ def run_pipeline(
             "行情用本地缓存。"
         )
     src = (traders[0].get("source") if traders else "") or ""
-    if cfg["boardKey"] in ("7d", "24h"):
-        api_path = f"/v2/leaderboard/{cfg['boardKey']}"
+    if cfg["boardKey"] in ("all", "7d", "24h"):
+        api_path = (
+            "/v2/leaderboard"
+            if cfg["boardKey"] == "all"
+            else f"/v2/leaderboard/{cfg['boardKey']}"
+        )
         if src == "fomo-api":
             note += f" 榜单来自官方 {api_path}（{len(traders)}人）。"
         elif len(traders) < cfg["limit"]:
