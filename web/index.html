@@ -20,15 +20,31 @@
       </div>
     </div>
     <nav class="nav">
-      <button id="btn-top20" class="nav-btn" type="button" data-mode="fast">
-        <span class="nav-btn-label">Fomo总榜前20</span>
-        <span class="nav-btn-hint">快速 · spotlight</span>
+      <button id="btn-top20" class="nav-btn" type="button" data-board="all">
+        <span class="nav-btn-label">总榜</span>
+        <span class="nav-btn-hint" id="hint-all-fast">前20</span>
       </button>
-      <button id="btn-top20-full" class="nav-btn" type="button" data-mode="full">
-        <span class="nav-btn-label">全量持仓</span>
-        <span class="nav-btn-hint">需 Privy Token</span>
+      <button id="btn-7d" class="nav-btn" type="button" data-board="7d">
+        <span class="nav-btn-label">7日榜</span>
+        <span class="nav-btn-hint" id="hint-7d-fast">前50</span>
       </button>
     </nav>
+
+    <section class="filter-box" id="board-settings-box">
+      <div class="auth-title">设置</div>
+      <p class="filter-help">榜单取前 N 名交易员（1–200）</p>
+      <label class="filter-row">
+        <span>总榜人数</span>
+        <input id="set-all-limit" class="filter-input" type="number" min="1" max="200" step="1" value="20" />
+      </label>
+      <label class="filter-row">
+        <span>日榜人数</span>
+        <input id="set-day-limit" class="filter-input" type="number" min="1" max="200" step="1" value="50" />
+      </label>
+      <div class="auth-actions">
+        <button id="btn-save-settings" class="auth-btn" type="button">保存设置</button>
+      </div>
+    </section>
 
     <section class="auth-box">
       <div class="auth-title">登录态</div>
@@ -45,9 +61,9 @@
       </p>
     </section>
 
-    <section class="filter-box" id="full-filter-box">
-      <div class="auth-title">全量筛选</div>
-      <p class="filter-help">仅作用于全量持仓结果；留空不限。市值支持 K/M，如 <code>500K</code>、<code>10M</code></p>
+    <section class="filter-box" id="token-filter-box">
+      <div class="auth-title">代币筛选</div>
+      <p class="filter-help">作用于当前总榜/7日榜结果；留空不限。市值支持 K/M，如 <code>500K</code>、<code>10M</code></p>
 
       <label class="filter-row">
         <span>市值区间</span>
@@ -92,10 +108,10 @@
     <header class="topbar">
       <div>
         <h1 id="panel-title">数据区</h1>
-        <p id="panel-note" class="panel-note">点击左侧按钮拉取数据；全量模式使用官方 balances 接口</p>
+        <p id="panel-note" class="panel-note">点击左侧总榜 / 7日榜拉取数据；登录后使用实时 balances</p>
       </div>
       <div class="topbar-meta">
-        <div id="mode-chip" class="meta-chip">mode —</div>
+        <div id="mode-chip" class="meta-chip">board —</div>
         <div id="updated-at" class="meta-chip">—</div>
         <div id="token-count" class="meta-chip">0 tokens</div>
       </div>
@@ -104,7 +120,7 @@
     <section class="table-shell">
       <div id="empty-state" class="empty-state">
         <p>尚未加载数据</p>
-        <p class="empty-sub">快速模式无需登录；全量模式需配置 Token</p>
+        <p class="empty-sub">建议配置登录态后刷新，持仓更准确</p>
       </div>
       <div class="table-scroll hidden" id="table-wrap">
         <table id="data-table">

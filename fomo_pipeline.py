@@ -17,7 +17,6 @@ from update_token_marketcap import (
     CSV_PATH,
     JSON_PATH,
     MD_PATH,
-    fetch_dexscreener,
     fmt_holding_with_mcap_pct,
     fmt_km,
     get_json,
@@ -33,6 +32,39 @@ from update_token_marketcap import (
 
 ROOT = Path(__file__).resolve().parent
 LAST_RESULT_PATH = ROOT / "fomo_top20_last_result.json"
+LAST_RESULT_7D_PATH = ROOT / "fomo_7d50_last_result.json"
+JSON_7D_PATH = ROOT / "fomo_7d50_holdings_by_token.json"
+CSV_7D_PATH = ROOT / "fomo_7d50_holdings_by_token.csv"
+MD_7D_PATH = ROOT / "fomo_7d50_holdings_by_token.md"
+SETTINGS_PATH = ROOT / "fomo_settings.json"
+
+DEFAULT_SETTINGS = {
+    "allLimit": 20,
+    "dayLimit": 50,
+}
+LIMIT_MIN = 1
+LIMIT_MAX = 200
+
+BOARD_CONFIG = {
+    "all": {
+        "boardKey": "all",
+        "limit": 20,
+        "label": "总榜",
+        "lastResult": LAST_RESULT_PATH,
+        "jsonPath": JSON_PATH,
+        "csvPath": CSV_PATH,
+        "mdPath": MD_PATH,
+    },
+    "7d": {
+        "boardKey": "7d",
+        "limit": 50,
+        "label": "7日榜",
+        "lastResult": LAST_RESULT_7D_PATH,
+        "jsonPath": JSON_7D_PATH,
+        "csvPath": CSV_7D_PATH,
+        "mdPath": MD_7D_PATH,
+    },
+}
 
 NETWORK_HINTS = {
     1: "ethereum",
@@ -90,24 +122,156 @@ def infer_platform(addr: str, network_id: Any, dex_meta: dict | None) -> str:
     return "unknown"
 
 
-def fetch_top20_traders(progress: Callable[[str], None] | None = None) -> list[dict]:
-    if progress:
-        progress("正在拉取 FOMO 总榜…")
+def clamp_limit(value: Any, default: int) -> int:
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        n = int(default)
+    return max(LIMIT_MIN, min(LIMIT_MAX, n))
+
+
+def load_settings() -> dict:
+    data = dict(DEFAULT_SETTINGS)
+    if SETTINGS_PATH.exists():
+        try:
+            raw = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                data.update(raw)
+        except Exception:
+            pass
+    return {
+        "allLimit": clamp_limit(data.get("allLimit"), DEFAULT_SETTINGS["allLimit"]),
+        "dayLimit": clamp_limit(data.get("dayLimit"), DEFAULT_SETTINGS["dayLimit"]),
+    }
+
+
+def save_settings(
+    all_limit: Any = None,
+    day_limit: Any = None,
+) -> dict:
+    cur = load_settings()
+    if all_limit is not None:
+        cur["allLimit"] = clamp_limit(all_limit, cur["allLimit"])
+    if day_limit is not None:
+        cur["dayLimit"] = clamp_limit(day_limit, cur["dayLimit"])
+    SETTINGS_PATH.write_text(
+        json.dumps(cur, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    return cur
+
+
+def resolve_board(board: str, limit: int | None = None) -> dict:
+    key = "7d" if board in ("7d", "7day", "week") else "all"
+    base = BOARD_CONFIG[key]
+    settings = load_settings()
+    default_limit = (
+        settings["dayLimit"] if key == "7d" else settings["allLimit"]
+    )
+    n = clamp_limit(limit if limit is not None else default_limit, default_limit)
+    short = "7日榜" if key == "7d" else "总榜"
+    return {
+        **base,
+        "limit": n,
+        "label": f"{short}前{n}",
+        "shortLabel": short,
+    }
+
+
+def _traders_from_985(board_key: str, limit: int) -> list[dict]:
     data = get_json("https://985monitor.xyz/fomo-leaderboards.json", retries=2)
-    rows = (data.get("boards") or {}).get("all") or []
+    rows = (data.get("boards") or {}).get(board_key) or []
     traders = []
-    for r in rows[:20]:
+    for r in rows[:limit]:
         traders.append(
             {
                 "rank": int(r.get("rank") or len(traders) + 1),
                 "handle": r.get("handle") or "",
                 "name": r.get("name") or r.get("handle") or "",
+                "uid": r.get("uid") or "",
                 "pnl": float(r.get("pnl") or 0),
                 "followers": int(r.get("followers") or 0),
                 "numTrades": int(r.get("numTrades") or 0),
+                "source": "985monitor",
             }
         )
     return traders
+
+
+def _traders_from_fomo_api(period: str, limit: int) -> list[dict]:
+    """Official FOMO leaderboard, e.g. GET /v2/leaderboard/7d."""
+    from fomo_auth import fomo_get, get_access_token
+
+    if not get_access_token():
+        raise RuntimeError("未配置 Privy Token，无法调用官方榜单")
+    data = fomo_get(f"/v2/leaderboard/{period}")
+    status = data.get("statusCode")
+    if data.get("error") or status in (401, 403, 430, 431) or data.get("success") is False:
+        err = data.get("error") or data.get("message") or f"HTTP {status}"
+        raise RuntimeError(f"official leaderboard {period} failed: {err}")
+    obj = data.get("responseObject", data)
+    rows = []
+    if isinstance(obj, dict):
+        rows = obj.get("leaderboard") or obj.get("users") or obj.get("items") or []
+    elif isinstance(obj, list):
+        rows = obj
+    if not isinstance(rows, list) or not rows:
+        raise RuntimeError(f"official leaderboard {period}: empty response")
+
+    traders = []
+    for i, r in enumerate(rows[:limit]):
+        if not isinstance(r, dict):
+            continue
+        handle = (r.get("userHandle") or r.get("handle") or "").strip()
+        name = (r.get("displayName") or r.get("name") or handle).strip()
+        uid = (r.get("id") or r.get("userId") or r.get("uid") or "").strip()
+        pnl = r.get("pnl7d") if period == "7d" else r.get("pnl")
+        if pnl is None:
+            pnl = r.get("pnlAllTime") or r.get("totalPnl") or 0
+        traders.append(
+            {
+                "rank": int(r.get("rank") or i + 1),
+                "handle": handle,
+                "name": name,
+                "uid": uid,
+                "pnl": float(pnl or 0),
+                "followers": int(r.get("followers") or 0),
+                "numTrades": int(r.get("numTrades") or r.get("swapCount") or 0),
+                "source": "fomo-api",
+            }
+        )
+    if not traders:
+        raise RuntimeError(f"official leaderboard {period}: no parseable users")
+    return traders
+
+
+def fetch_traders(
+    progress: Callable[[str], None] | None = None,
+    board: str = "all",
+    limit: int | None = None,
+) -> list[dict]:
+    cfg = resolve_board(board, limit=limit)
+    board_key = cfg["boardKey"]
+    limit = cfg["limit"]
+    if progress:
+        progress(f"正在拉取 FOMO {cfg['label']}…")
+
+    # 7d: prefer official authenticated API (full top50+); fallback 985monitor.
+    if board_key == "7d":
+        try:
+            traders = _traders_from_fomo_api("7d", limit)
+            if progress:
+                progress(f"官方7日榜已拉取 {len(traders)} 人")
+            return traders
+        except Exception as exc:
+            if progress:
+                progress(f"官方7日榜失败，回退 985monitor：{exc}")
+            return _traders_from_985("7d", limit)
+
+    return _traders_from_985(board_key, limit)
+
+
+def fetch_top20_traders(progress: Callable[[str], None] | None = None) -> list[dict]:
+    return fetch_traders(progress=progress, board="all")
 
 
 def fetch_profile(handle: str) -> dict:
@@ -122,34 +286,50 @@ def collect_open_holdings(
     traders: list[dict],
     progress: Callable[[str], None] | None = None,
     mode: str = "fast",
-) -> tuple[dict[str, list[dict]], dict[str, dict], dict]:
-    """Return token_map, profiles, stats.
+) -> tuple[dict[str, list[dict]], dict[str, dict], dict, dict]:
+    """Return token_map, profiles, stats, token_meta_cache.
 
-    mode=fast: 985monitor profitSnapshot
-    mode=full: FOMO /v2/users/{userId}/balances with Privy token
+    Holdings source:
+    - Privy 登录态：一律用 FOMO /v2/users/{userId}/balances（实时开仓）
+    - 未登录 fast：985monitor profitSnapshot（可能滞后，已平仓仍可能显示）
     """
-    from fomo_auth import balances_to_holdings, fetch_user_balances, get_access_token
+    from fomo_auth import (
+        balances_to_holdings,
+        fetch_user_balances,
+        get_access_token,
+        load_token_meta_cache,
+        resolve_user_id,
+        save_token_meta_cache,
+        upsert_token_meta,
+    )
 
     token_map: dict[str, list[dict]] = defaultdict(list)
     profiles: dict[str, dict] = {}
+    token_meta_cache = load_token_meta_cache()
+    use_balances = bool(get_access_token())
     stats = {
         "mode": mode,
+        "holdingsSource": "balances" if use_balances else "spotlight",
         "tradersOk": 0,
         "tradersFail": 0,
         "holdingRows": 0,
         "errors": [],
+        "tokenMetaUpdated": 0,
     }
 
-    if mode == "full" and not get_access_token():
+    if mode == "full" and not use_balances:
         raise RuntimeError("全量模式需要先配置 Privy Access Token")
 
     def one(trader: dict):
         handle = trader["handle"]
+        # Spotlight only needed when we cannot call balances.
+        if use_balances:
+            return trader, {}
         profile = fetch_profile(handle)
         return trader, profile
 
     done = 0
-    with ThreadPoolExecutor(max_workers=4 if mode == "full" else 6) as pool:
+    with ThreadPoolExecutor(max_workers=4 if use_balances else 6) as pool:
         futures = [pool.submit(one, t) for t in traders]
         for fut in as_completed(futures):
             trader, profile = fut.result()
@@ -157,17 +337,24 @@ def collect_open_holdings(
             handle = trader["handle"]
             profiles[handle] = profile
             name = trader.get("name") or handle
+            src_label = "balances" if use_balances else mode
             if progress:
-                progress(f"拉取持仓 {done}/{len(traders)}：{name} ({mode})")
+                progress(f"拉取持仓 {done}/{len(traders)}：{name} ({src_label})")
 
             holdings = []
             try:
-                if mode == "full":
-                    user_id = (profile.get("profile") or {}).get("userId") or profile.get("userId")
+                if use_balances:
+                    user_id = resolve_user_id(
+                        handle, known_uid=trader.get("uid") or ""
+                    )
                     if not user_id:
-                        raise RuntimeError(f"profile missing userId for {handle}")
+                        raise RuntimeError(f"missing userId for {handle}")
+                    trader["uid"] = user_id
                     bal_rows = fetch_user_balances(user_id)
                     holdings = balances_to_holdings(bal_rows)
+                    for h in holdings:
+                        upsert_token_meta(token_meta_cache, h)
+                        stats["tokenMetaUpdated"] += 1
                 else:
                     snap = profile.get("profitSnapshot") or {}
                     for item in snap.get("items") or []:
@@ -221,17 +408,141 @@ def collect_open_holdings(
                         "symbol": symbol,
                         "displayName": display,
                         "rawName": raw_name,
+                        "marketCap": float(h.get("marketCap") or 0),
+                        "volume24": float(h.get("volume24") or 0),
+                        "change24": h.get("change24"),
+                        "priceUsd": float(h.get("priceUsd") or 0),
+                        "createdAt": h.get("createdAt") or "",
                     }
                 )
                 stats["holdingRows"] += 1
-    return token_map, profiles, stats
+
+    if use_balances:
+        save_token_meta_cache(token_meta_cache)
+    return token_map, profiles, stats, token_meta_cache
+
+
+def _apply_meta_to_token_map(token_map: dict[str, list[dict]], holding: dict) -> None:
+    key = normalize_addr(holding.get("tokenAddress") or "")
+    if not key or key not in token_map:
+        return
+    for entry in token_map[key]:
+        if holding.get("marketCap"):
+            entry["marketCap"] = float(holding["marketCap"])
+        if holding.get("volume24"):
+            entry["volume24"] = float(holding["volume24"])
+        if holding.get("change24") not in (None, ""):
+            entry["change24"] = holding["change24"]
+        if holding.get("priceUsd"):
+            entry["priceUsd"] = float(holding["priceUsd"])
+        if holding.get("symbol") and not entry.get("symbol"):
+            entry["symbol"] = holding["symbol"]
+        if holding.get("name") and not entry.get("rawName"):
+            entry["rawName"] = holding["name"]
+        if holding.get("createdAt") and not entry.get("createdAt"):
+            entry["createdAt"] = holding["createdAt"]
+
+
+def backfill_missing_token_meta(
+    token_map: dict[str, list[dict]],
+    token_meta_cache: dict,
+    traders: list[dict],
+    progress: Callable[[str], None] | None = None,
+) -> dict:
+    """When auth is available, fetch balances for holders of tokens missing mcap."""
+    from fomo_auth import (
+        balances_to_holdings,
+        fetch_user_balances,
+        get_access_token,
+        meta_from_cache_or_holding,
+        resolve_user_id,
+        save_token_meta_cache,
+        upsert_token_meta,
+    )
+
+    if not get_access_token() or not token_map:
+        return token_meta_cache
+
+    missing = []
+    for addr, holders in token_map.items():
+        meta = meta_from_cache_or_holding(token_meta_cache, addr, holders)
+        if float(meta.get("marketCap") or 0) <= 0:
+            missing.append(addr)
+    if not missing:
+        return token_meta_cache
+
+    uid_by_handle = {
+        (t.get("handle") or ""): (t.get("uid") or "")
+        for t in traders
+        if t.get("handle")
+    }
+    uncovered = set(missing)
+    fetch_plan: list[tuple[str, str, list[str]]] = []  # handle, uid, covers
+
+    # Greedy set cover: pick holders that cover most missing tokens
+    while uncovered:
+        best = None  # (cover_n, has_uid, handle, uid, covers)
+        handles = {
+            (h.get("handle") or "")
+            for addr in uncovered
+            for h in (token_map.get(addr) or [])
+            if h.get("handle")
+        }
+        for handle in handles:
+            covers = [
+                a
+                for a in uncovered
+                if any((x.get("handle") or "") == handle for x in (token_map.get(a) or []))
+            ]
+            if not covers:
+                continue
+            uid = uid_by_handle.get(handle) or ""
+            cand = (len(covers), 1 if uid else 0, handle, uid, covers)
+            if best is None or cand[:2] > best[:2]:
+                best = cand
+        if not best:
+            break
+        _n, _has_uid, handle, uid, covers = best
+        if not uid:
+            try:
+                uid = resolve_user_id(handle)
+                if uid:
+                    uid_by_handle[handle] = uid
+            except Exception:
+                uid = ""
+        if not uid:
+            for a in covers:
+                uncovered.discard(a)
+            continue
+        fetch_plan.append((handle, uid, covers))
+        for a in covers:
+            uncovered.discard(a)
+    if progress and fetch_plan:
+        progress(f"补全缺失行情：{len(missing)} 个代币，约 {len(fetch_plan)} 次 balances…")
+
+    for i, (handle, uid, covers) in enumerate(fetch_plan, 1):
+        if progress:
+            progress(f"补全行情 {i}/{len(fetch_plan)}：{handle}（覆盖 {len(covers)}）")
+        try:
+            holds = balances_to_holdings(fetch_user_balances(uid))
+            for h in holds:
+                upsert_token_meta(token_meta_cache, h)
+                _apply_meta_to_token_map(token_map, h)
+        except Exception as exc:
+            if progress:
+                progress(f"补全行情失败 {handle}: {exc}")
+
+    save_token_meta_cache(token_meta_cache)
+    return token_meta_cache
 
 
 def aggregate_rows(
     token_map: dict[str, list[dict]],
-    dex_data: dict[str, dict],
+    token_meta_cache: dict,
     ath_cache: dict,
 ) -> list[dict]:
+    from fomo_auth import meta_from_cache_or_holding
+
     rows = []
     for key, holders in token_map.items():
         holders = sorted(holders, key=lambda h: h["rank"])
@@ -242,36 +553,54 @@ def aggregate_rows(
         lo = min(holders, key=lambda h: h["value"])
         sample = holders[0]
         addr = sample["tokenAddress"]
-        meta = dex_data.get(normalize_addr(addr), {})
+        meta = meta_from_cache_or_holding(token_meta_cache, addr, holders)
         current_mcap = float(meta.get("marketCap") or 0)
-        ath_mcap, ath_time = merge_ath(ath_cache, addr, current_mcap, None, None)
+        volume24 = float(meta.get("volume24") or 0)
+        change24 = meta.get("change24")
+        created_at = (meta.get("createdAt") or sample.get("createdAt") or "").strip()
+        # Keep ATH cache warm (columns removed from table output).
+        merge_ath(ath_cache, addr, current_mcap, None, None)
 
         symbol = (meta.get("symbol") or sample.get("symbol") or "").strip()
         name = (meta.get("name") or sample.get("rawName") or "").strip()
+        # Never treat trader nicknames as token names.
+        trader_labels = {
+            (h.get("name") or "").strip().lower()
+            for h in holders
+            if h.get("name")
+        } | {
+            (h.get("handle") or "").strip().lower()
+            for h in holders
+            if h.get("handle")
+        }
+        if name.lower() in trader_labels:
+            name = ""
         if symbol and name and name.upper() != symbol.upper():
             display = f"{symbol} ({name})"
         else:
-            display = symbol or name or sample["displayName"]
+            display = symbol or name or (sample.get("symbol") or addr[:10])
 
         holder_details = [
             f"{h['rank']}.{h['name']} {fmt_holding_with_mcap_pct(h['value'], current_mcap)}"
             for h in holders
         ]
+        network_id = meta.get("networkId") if meta.get("networkId") is not None else sample.get("networkId")
         row = {
             "名称": display,
             "市值": current_mcap if current_mcap else "",
+            "成交量": volume24 if volume24 else "",
+            "24h涨跌": change24 if change24 not in (None, "") else "",
             "持仓市值": total,
             "持仓人数": count,
             "人均持仓市值": avg,
-            "最高市值": ath_mcap if ath_mcap else "",
-            "最高市值时间": ath_time or "",
+            "创建时间": created_at or "",
             "最高持仓人": f"{hi['rank']}.{hi['name']}",
             "最高持仓市值": hi["value"],
             "最低持仓人": f"{lo['rank']}.{lo['name']}",
             "最低持仓市值": lo["value"],
             "所有持仓人": "\n".join(holder_details),
             "持仓明细": holder_details,
-            "发射平台": infer_platform(addr, sample.get("networkId"), meta),
+            "发射平台": infer_platform(addr, network_id, meta),
             "合约地址": addr,
         }
         normalize_row_display(row)
@@ -286,31 +615,66 @@ def aggregate_rows(
     return rows
 
 
-def persist_outputs(traders: list[dict], rows: list[dict], meta: dict) -> None:
-    fieldnames = list(CSV_COLUMNS)
-    errors = []
-    try:
-        write_csv_rows(fieldnames, rows)
-    except OSError as exc:
-        errors.append(f"csv: {exc}")
-        alt = CSV_PATH.with_suffix(".live.csv")
-        try:
-            with open(alt, "w", encoding="utf-8-sig", newline="") as f:
-                import csv
+def persist_outputs(
+    traders: list[dict],
+    rows: list[dict],
+    meta: dict,
+    board: str = "all",
+) -> None:
+    import csv as _csv
 
-                writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
+    cfg = resolve_board(board)
+    fieldnames = list(CSV_COLUMNS)
+    csv_path = cfg["csvPath"]
+    json_path = cfg["jsonPath"]
+    md_path = cfg["mdPath"]
+    last_path = cfg["lastResult"]
+    errors: list[str] = []
+
+    try:
+        tmp = csv_path.with_suffix(csv_path.suffix + ".tmp")
+        with open(tmp, "w", encoding="utf-8-sig", newline="") as f:
+            writer = _csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
+            writer.writeheader()
+            writer.writerows(rows)
+        try:
+            tmp.replace(csv_path)
+        except OSError:
+            with open(csv_path, "w", encoding="utf-8-sig", newline="") as f:
+                writer = _csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
                 writer.writeheader()
                 writer.writerows(rows)
-        except OSError as exc2:
-            errors.append(f"csv-alt: {exc2}")
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
+    except OSError as exc:
+        errors.append(f"csv: {exc}")
+
     try:
-        write_markdown(rows)
+        lines = [
+            f"# FOMO {cfg['label']} 持仓汇总",
+            "",
+            f"> 市值更新时间: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}",
+            "",
+            "| " + " | ".join(fieldnames) + " |",
+            "| " + " | ".join(["---"] * len(fieldnames)) + " |",
+        ]
+        for row in rows:
+            cells = [
+                str(row.get(h, "")).replace("|", "\\|").replace("\n", " ")
+                for h in fieldnames
+            ]
+            lines.append("| " + " | ".join(cells) + " |")
+        md_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     except OSError as exc:
         errors.append(f"md: {exc}")
 
     payload = {
         "generatedAt": meta.get("updatedAt"),
         "marketCapUpdatedAt": meta.get("updatedAt"),
+        "board": cfg["boardKey"],
+        "boardLabel": cfg["label"],
         "source": meta.get("source")
         or "985monitor FOMO spotlight + DexScreener (fast path ATH cache)",
         "limitation": meta.get("limitation")
@@ -325,8 +689,9 @@ def persist_outputs(traders: list[dict], rows: list[dict], meta: dict) -> None:
         "columns": list(CSV_COLUMNS),
         "rows": rows,
         "tokens": rows,
+        "note": meta.get("note") or "",
     }
-    for path in (JSON_PATH, LAST_RESULT_PATH):
+    for path in (json_path, last_path):
         try:
             path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         except OSError as exc:
@@ -335,8 +700,9 @@ def persist_outputs(traders: list[dict], rows: list[dict], meta: dict) -> None:
         meta["persistWarnings"] = errors
 
 
-def load_cached_result() -> dict | None:
-    path = LAST_RESULT_PATH if LAST_RESULT_PATH.exists() else JSON_PATH
+def load_cached_result(board: str = "all") -> dict | None:
+    cfg = resolve_board(board)
+    path = cfg["lastResult"] if cfg["lastResult"].exists() else cfg["jsonPath"]
     if not path.exists():
         return None
     try:
@@ -347,52 +713,87 @@ def load_cached_result() -> dict | None:
             if key in data and isinstance(data[key], list):
                 data[key] = [rename_legacy_row(r) for r in data[key]]
         data["columns"] = list(CSV_COLUMNS)
+        data.setdefault("board", cfg["boardKey"])
+        data.setdefault("boardLabel", cfg["label"])
         return data
     except Exception:
         return None
 
 
-def run_pipeline(progress: Callable[[str], None] | None = None, mode: str = "fast") -> dict:
+def run_pipeline(
+    progress: Callable[[str], None] | None = None,
+    mode: str = "fast",
+    board: str = "all",
+    limit: int | None = None,
+) -> dict:
     started = time.time()
     mode = "full" if mode == "full" else "fast"
-    traders = fetch_top20_traders(progress)
-    token_map, _profiles, stats = collect_open_holdings(traders, progress, mode=mode)
+    cfg = resolve_board(board, limit=limit)
+    traders = fetch_traders(progress, board=cfg["boardKey"], limit=cfg["limit"])
+    token_map, _profiles, stats, token_meta_cache = collect_open_holdings(
+        traders, progress, mode=mode
+    )
 
-    addresses = []
-    for holders in token_map.values():
-        if holders:
-            addresses.append(holders[0]["tokenAddress"])
+    from fomo_auth import get_access_token
+
+    if get_access_token():
+        token_meta_cache = backfill_missing_token_meta(
+            token_map, token_meta_cache, traders, progress=progress
+        )
+    elif progress:
+        progress("未登录：缺失行情的代币将留空（不请求三方）")
 
     if progress:
-        progress(f"正在拉取/命中缓存市值（{len(addresses)} 个，单币间隔≥10分钟）…")
-    dex_data = fetch_dexscreener(addresses)
+        if mode == "full":
+            progress("已用 FOMO balances 更新代币市值/成交量/涨跌缓存…")
+        else:
+            progress("行情优先本地缓存；登录态已尝试补全缺失项…")
 
     if progress:
         progress("合并最高市值缓存…")
     ath_cache = load_cache()
-    rows = aggregate_rows(token_map, dex_data, ath_cache)
+    rows = aggregate_rows(token_map, token_meta_cache, ath_cache)
     save_cache(ath_cache)
 
     updated_at = datetime.now(timezone.utc).isoformat()
-    if mode == "full":
-        source = "FOMO /v2/users/{id}/balances (Privy) + DexScreener"
+    holdings_src = (stats or {}).get("holdingsSource") or (
+        "balances" if get_access_token() else "spotlight"
+    )
+    if holdings_src == "balances":
+        source = f"FOMO {cfg['label']} balances (实时开仓+行情)"
         limitation = (
-            "全量模式：使用你的 Privy Token 调用官方 balances。"
-            "若某账号失败会记入 stats.errors；最高市值仍优先本地缓存。"
+            f"{'全量' if mode == 'full' else '快速'}·{cfg['label']}：登录态持仓来自 Privy balances；"
+            "市值/成交量/24h涨跌来自 tokenFilterResult（已缓存）。"
+            "985monitor spotlight 可能滞后，已不再用于开仓判定。"
         )
-        note = "全量模式：持仓来自 FOMO balances；市值 DexScreener（本地缓存，单币≥10分钟）；最高市值缓存。"
+        note = (
+            f"{'全量' if mode == 'full' else '快速'} · {cfg['label']}："
+            "持仓与行情均来自 FOMO balances（实时开仓）。"
+        )
     else:
-        source = "985monitor FOMO spotlight + DexScreener (fast path ATH cache)"
+        source = f"985monitor spotlight + FOMO token meta cache ({cfg['label']})"
         limitation = (
-            "快速模式：spotlight 未平仓盈利仓估算，通常仅头部仓位。"
-            "最高市值优先本地缓存，无历史源时初值=当前市值。"
+            f"快速模式：{cfg['label']} spotlight 持仓估算（未登录，可能含已平仓滞后）；"
+            "市值/成交量/24h涨跌仅用本地 FOMO balances 缓存，不请求 DexScreener/Gecko。"
         )
-        note = "快速模式：市值 DexScreener（本地缓存，单币≥10分钟）；最高市值本地缓存。"
+        note = (
+            f"快速 · {cfg['label']}：未登录，持仓来自 spotlight（可能滞后）；"
+            "行情用本地缓存。"
+        )
+    src = (traders[0].get("source") if traders else "") or ""
+    if cfg["boardKey"] == "7d":
+        if src == "fomo-api":
+            note += f" 榜单来自官方 /v2/leaderboard/7d（{len(traders)}人）。"
+        elif len(traders) < cfg["limit"]:
+            limitation += f" 数据源当前仅返回 {len(traders)} 名交易员（目标前{cfg['limit']}）。"
+            note += f" 当前源提供 {len(traders)}/{cfg['limit']} 名交易员。"
 
     result = {
         "updatedAt": updated_at,
         "elapsedSec": round(time.time() - started, 1),
         "mode": mode,
+        "board": cfg["boardKey"],
+        "boardLabel": cfg["label"],
         "source": source,
         "limitation": limitation,
         "stats": stats,
@@ -404,15 +805,15 @@ def run_pipeline(progress: Callable[[str], None] | None = None, mode: str = "fas
     }
     if progress:
         progress("写入 CSV / JSON / Markdown…")
-    persist_outputs(traders, rows, result)
+    persist_outputs(traders, rows, result, board=cfg["boardKey"])
     if progress:
         progress(f"完成，共 {len(rows)} 个代币，用时 {result['elapsedSec']}s")
     return result
 
 
 def run_fast_pipeline(progress: Callable[[str], None] | None = None) -> dict:
-    return run_pipeline(progress=progress, mode="fast")
+    return run_pipeline(progress=progress, mode="fast", board="all")
 
 
 def run_full_pipeline(progress: Callable[[str], None] | None = None) -> dict:
-    return run_pipeline(progress=progress, mode="full")
+    return run_pipeline(progress=progress, mode="full", board="all")

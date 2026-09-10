@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parent
 AUTH_PATH = ROOT / "fomo_auth.json"
+TOKEN_META_CACHE_PATH = ROOT / "fomo_token_meta_cache.json"
 PROD_API = "https://prod-api.fomo.family"
 SUPPORTED_CHAINS = "1,56,143,4663,8453,1399811149"
 # Cloudflare / FOMO rejects modern curl JA3; chrome110 impersonation works.
@@ -166,6 +168,42 @@ def fomo_get(path: str, token: str | None = None, timeout: int = 40) -> dict:
         return {"error": str(exc), "statusCode": 0}
 
 
+def fetch_user_by_handle(handle: str, token: str | None = None) -> dict:
+    """Resolve FOMO user via GET /v2/users/userHandle/{handle}.
+
+    Note: ``userHandle`` is a literal path segment (lookup-by-handle), not a placeholder.
+    """
+    handle = (handle or "").strip()
+    if not handle:
+        raise RuntimeError("empty user handle")
+    from urllib.parse import quote
+
+    data = fomo_get(f"/v2/users/userHandle/{quote(handle, safe='')}", token=token)
+    status = data.get("statusCode")
+    if data.get("error") or status in (401, 403, 404, 430, 431) or data.get("success") is False:
+        code = status or "?"
+        err = data.get("error") or data.get("message") or "not found"
+        raise RuntimeError(f"userHandle lookup failed for {handle}: HTTP {code} {err}")
+    obj = data.get("responseObject")
+    if not isinstance(obj, dict) or not obj.get("id"):
+        raise RuntimeError(f"unexpected userHandle shape for {handle}")
+    return obj
+
+
+def resolve_user_id(
+    handle: str,
+    *,
+    known_uid: str | None = None,
+    token: str | None = None,
+) -> str:
+    """Prefer known uid, else FOMO /v2/users/userHandle/{handle}."""
+    uid = (known_uid or "").strip()
+    if uid:
+        return uid
+    user = fetch_user_by_handle(handle, token=token)
+    return str(user.get("id") or "").strip()
+
+
 def fetch_user_balances(user_id: str, token: str | None = None) -> list[dict]:
     data = fomo_get(f"/v2/users/{user_id}/balances", token=token)
     status = data.get("statusCode")
@@ -190,6 +228,34 @@ def fetch_user_balances(user_id: str, token: str | None = None) -> list[dict]:
     if not isinstance(rows, list):
         raise RuntimeError(f"unexpected balances shape for {user_id}: {type(obj)}")
     return rows
+
+
+def normalize_created_at(value) -> str:
+    """Normalize FOMO createdAt (unix sec/ms or ISO) to UTC ISO string."""
+    if value in (None, ""):
+        return ""
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return ""
+        if "T" in text or (text.count("-") >= 2 and not text.replace(".", "").isdigit()):
+            return text
+        try:
+            value = float(text)
+        except ValueError:
+            return text
+    try:
+        ts = float(value)
+    except (TypeError, ValueError):
+        return ""
+    if ts <= 0:
+        return ""
+    if ts > 1e12:  # milliseconds
+        ts /= 1000.0
+    try:
+        return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+    except (OverflowError, OSError, ValueError):
+        return ""
 
 
 def parse_balance_item(item: dict) -> dict | None:
@@ -251,8 +317,27 @@ def parse_balance_item(item: dict) -> dict | None:
         amount = 0.0
 
     value = amount * price if price > 0 and amount > 0 else 0.0
-    if value <= 0:
+    # Drop dust / rounding-to-$0 bags (fmt_km rounds <0.5 to "0")
+    if value < 1.0:
         return None
+
+    def _f(v):
+        if v in (None, ""):
+            return 0.0
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return 0.0
+
+    market_cap = _f(tfr.get("marketCap"))
+    volume24 = _f(tfr.get("volume24"))
+    change24 = _f(tfr.get("change24"))
+    launchpad = (token_meta.get("launchpad") or {}) if isinstance(token_meta, dict) else {}
+    created_at = normalize_created_at(
+        tfr.get("createdAt")
+        or token_meta.get("createdAt")
+        or (token_meta.get("info") or {}).get("createdAt")
+    )
 
     return {
         "tokenAddress": addr,
@@ -262,7 +347,11 @@ def parse_balance_item(item: dict) -> dict | None:
         "amount": amount,
         "priceUsd": price,
         "value": value,
-        "marketCap": float(tfr.get("marketCap") or 0) if tfr.get("marketCap") not in (None, "") else 0,
+        "marketCap": market_cap,
+        "volume24": volume24,
+        "change24": change24,
+        "createdAt": created_at,
+        "launchpadIconUrl": launchpad.get("launchpadIconUrl") or "",
     }
 
 
@@ -273,6 +362,104 @@ def balances_to_holdings(rows: list[dict]) -> list[dict]:
         if parsed and parsed["value"] > 0:
             out.append(parsed)
     return out
+
+
+def _norm_addr(addr: str) -> str:
+    addr = (addr or "").strip()
+    if addr.startswith("0x"):
+        return addr.lower()
+    return addr
+
+
+def load_token_meta_cache() -> dict:
+    if not TOKEN_META_CACHE_PATH.exists():
+        return {}
+    try:
+        data = json.loads(TOKEN_META_CACHE_PATH.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_token_meta_cache(cache: dict) -> None:
+    cache = dict(cache or {})
+    cache["updatedAt"] = datetime.now(timezone.utc).isoformat()
+    TOKEN_META_CACHE_PATH.write_text(
+        json.dumps(cache, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+
+def upsert_token_meta(cache: dict, holding: dict) -> None:
+    """Merge FOMO balances token fields into local meta cache."""
+    if not isinstance(holding, dict):
+        return
+    addr = _norm_addr(holding.get("tokenAddress") or "")
+    if not addr or addr == "updatedAt":
+        return
+    now = datetime.now(timezone.utc).isoformat()
+    prev = cache.get(addr) if isinstance(cache.get(addr), dict) else {}
+    entry = {
+        **prev,
+        "tokenAddress": holding.get("tokenAddress") or prev.get("tokenAddress") or addr,
+        "symbol": holding.get("symbol") or prev.get("symbol") or "",
+        "name": holding.get("name") or prev.get("name") or "",
+        "networkId": holding.get("networkId")
+        if holding.get("networkId") is not None
+        else prev.get("networkId"),
+        "priceUsd": float(holding.get("priceUsd") or prev.get("priceUsd") or 0),
+        "marketCap": float(prev.get("marketCap") or 0),
+        "volume24": float(prev.get("volume24") or 0),
+        "change24": prev.get("change24"),
+        "createdAt": prev.get("createdAt") or "",
+        "fetchedAt": now,
+        "source": "fomo-balances",
+    }
+    if holding.get("marketCap"):
+        entry["marketCap"] = float(holding["marketCap"])
+    if holding.get("volume24"):
+        entry["volume24"] = float(holding["volume24"])
+    if holding.get("change24") not in (None, ""):
+        entry["change24"] = float(holding["change24"])
+    created = normalize_created_at(holding.get("createdAt") or entry.get("createdAt"))
+    if created:
+        entry["createdAt"] = created
+    cache[addr] = entry
+
+def meta_from_cache_or_holding(cache: dict, addr: str, holders: list[dict] | None = None) -> dict:
+    key = _norm_addr(addr)
+    meta = {}
+    if isinstance(cache.get(key), dict):
+        meta = dict(cache[key])
+    if holders:
+        for h in holders:
+            # Holder dict uses "name" for trader nickname; token name is "rawName".
+            token_name = (h.get("rawName") or "").strip()
+            if float(h.get("marketCap") or 0) > 0 or h.get("change24") not in (None, ""):
+                for field in (
+                    "symbol",
+                    "networkId",
+                    "priceUsd",
+                    "marketCap",
+                    "volume24",
+                    "change24",
+                    "createdAt",
+                ):
+                    if h.get(field) not in (None, ""):
+                        meta[field] = h.get(field)
+                if token_name:
+                    meta["name"] = token_name
+                break
+            if not meta.get("symbol") and h.get("symbol"):
+                meta["symbol"] = h["symbol"]
+            if not meta.get("name") and token_name:
+                meta["name"] = token_name
+            if not meta.get("createdAt") and h.get("createdAt"):
+                meta["createdAt"] = h["createdAt"]
+            if meta.get("networkId") is None and h.get("networkId") is not None:
+                meta["networkId"] = h["networkId"]
+    if meta.get("createdAt"):
+        meta["createdAt"] = normalize_created_at(meta.get("createdAt"))
+    return meta
 
 
 def test_auth(token: str | None = None) -> dict:

@@ -62,11 +62,8 @@ FOMO 完整持仓接口需登录。用 985monitor 画像 spotlight：
 
 ### 4. 补市值
 
-- **当前市值**：DexScreener（流动性最高 pair 的 **`fdv` 优先**）；`pump` 币或疑似按满量 1B 计价时，用 **GeckoTerminal `market_cap_usd`** 校正（如 MUSHU）；拉取后写入 `fomo_mcap_live_cache.json`，**单币最小间隔 10 分钟**
-- **最高市值**：Solana/BSC/Base 等用 GeckoTerminal 日 K 最高价 ×（当前市值/现价）；注意 **30 req/min**，间隔 ≥2.5s，429 重试
-- **Robinhood 等无历史源**：ATH 初值=当前市值，写入 `fomo_mcap_ath_cache.json`，每次运行若创新高则更新
-- 只匹配 **baseToken** 地址，避免把 WETH 等 quote 市值错绑到目标代币
-- OHLCV 异常高点需过滤（相对中位数/现价倍数上限）
+- **持仓来源**：登录态一律用 FOMO `balances` 实时开仓；未登录才用 985monitor spotlight（可能把已平仓仍标为 open）
+- **当前市值 / 成交量 / 24h涨跌 / 创建时间**：登录时来自 FOMO `balances.tokenFilterResult`，写入 `fomo_token_meta_cache.json`；未登录只读缓存。**不再请求 DexScreener/Gecko**
 
 日常只刷新市值时运行：
 
@@ -82,12 +79,13 @@ python update_token_marketcap.py
 ## 固定列顺序
 
 ```
-名称,市值,持仓市值,持仓人数,人均持仓市值,最高市值,最高市值时间,最高持仓人,最高持仓市值,最低持仓人,最低持仓市值,所有持仓人,发射平台,合约地址
+名称,市值,成交量,24h涨跌,持仓市值,持仓人数,人均持仓市值,创建时间,最高持仓人,最高持仓市值,最低持仓人,最低持仓市值,所有持仓人,发射平台,合约地址
 ```
 
 ## 显示格式
 
-- **市值列**（持仓市值、人均持仓市值、市值、最高市值）：`≥1M` → 一位小数 `M`；`≥1K` → 整数 `K`；更小用整数（例：`37.6M`、`887K`）
+- **市值列**（持仓市值、人均持仓市值、市值、成交量）：`≥1M` → 一位小数 `M`；`≥1K` → 整数 `K`；更小用整数（例：`37.6M`、`887K`）
+- **24h涨跌**：`+12.34%` / `-5.67%`
 - **最高/最低持仓市值**：`{市值}({占市值%})`，例：`12.1M(2.44%)`
 - **持仓人列**：一律 `排名.昵称`，例：`9.ogle`；所有持仓人空格分隔：`1.Unipcs 6.Vee 7.AJC`
 
@@ -100,14 +98,16 @@ Windows 输出设 `PYTHONIOENCODING=utf-8`。
 | `update_token_marketcap.py` | 刷新市值/ATH，规范化显示，写 CSV/JSON/MD |
 | `update_token_marketcap.bat` | Windows 一键运行 |
 | `fomo_mcap_ath_cache.json` | ATH 本地缓存（勿当脏文件删掉后不重建） |
-| `fomo_mcap_live_cache.json` | 当前市值本地缓存（单币 ≥10 分钟；可删，会重新拉取） |
+| `fomo_token_meta_cache.json` | FOMO balances 行情缓存（市值/成交量/24h涨跌） |
+| `fomo_mcap_live_cache.json` | （旧）DexScreener 市值缓存，可忽略 |
 | `tmp_profiles.json` / `tmp_dex_meta.json` | 调试缓存，可删 |
 
 ## 全量持仓（方案 A：Privy Token）
 
 个人主页持仓来自官方：
 
-`GET https://prod-api.fomo.family/v2/users/{userId}/balances`
+`GET https://prod-api.fomo.family/v2/users/userHandle/{handle}` → 用户资料（`id`=UUID）  
+`GET https://prod-api.fomo.family/v2/users/{userId}/balances` → 持仓 + `tokenFilterResult` 行情
 
 请求头需：
 

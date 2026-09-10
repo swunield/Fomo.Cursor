@@ -12,3 +12,4 @@ tmp_balances*.json
 tmp_profile_unipcs.html
 probe_*.py
 fomo_mcap_live_cache.json
+fomo_token_meta_cache.json

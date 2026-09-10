@@ -1,11 +1,12 @@
 const COLUMNS = [
   "名称",
   "市值",
+  "成交量",
+  "24h涨跌",
   "持仓市值",
   "持仓人数",
   "人均持仓市值",
-  "最高市值",
-  "最高市值时间",
+  "创建时间",
   "最高持仓人",
   "最高持仓市值",
   "最低持仓人",
@@ -30,10 +31,11 @@ const LEGACY_COL_RENAME = {
 
 const NUM_COLS = new Set([
   "市值",
+  "成交量",
+  "24h涨跌",
   "持仓市值",
   "持仓人数",
   "人均持仓市值",
-  "最高市值",
   "最高持仓市值",
   "最低持仓市值",
 ]);
@@ -48,8 +50,11 @@ const FILTER_FIELDS = [
   { key: "countMax", id: "flt-count-max" },
 ];
 
+const boardSettings = { allLimit: 20, dayLimit: 50 };
+
 const btnFast = document.getElementById("btn-top20");
-const btnFull = document.getElementById("btn-top20-full");
+const btn7d = document.getElementById("btn-7d");
+const navButtons = [btnFast, btn7d].filter(Boolean);
 const jobStatus = document.getElementById("job-status");
 const panelTitle = document.getElementById("panel-title");
 const panelNote = document.getElementById("panel-note");
@@ -70,11 +75,18 @@ const btnApplyFilter = document.getElementById("btn-apply-filter");
 const btnResetFilter = document.getElementById("btn-reset-filter");
 const filterSummary = document.getElementById("filter-summary");
 const rowTip = document.getElementById("row-tip");
+const setAllLimit = document.getElementById("set-all-limit");
+const setDayLimit = document.getElementById("set-day-limit");
+const btnSaveSettings = document.getElementById("btn-save-settings");
+const hintAllFast = document.getElementById("hint-all-fast");
+const hint7dFast = document.getElementById("hint-7d-fast");
 
 let pollTimer = null;
 let activeMode = "fast";
+let activeBoard = "all";
 let lastPayload = null;
 let tipRowIndex = -1;
+let sortState = { col: null, dir: null }; // dir: 'asc' | 'desc'
 
 function setJobStatus(text, mode = "") {
   jobStatus.textContent = text;
@@ -84,8 +96,9 @@ function setJobStatus(text, mode = "") {
 function showLoading(show, text = "正在拉取…") {
   loadingOverlay.classList.toggle("hidden", !show);
   loadingText.textContent = text;
-  btnFast.disabled = show;
-  btnFull.disabled = show;
+  navButtons.forEach((btn) => {
+    if (btn) btn.disabled = show;
+  });
 }
 
 function formatTime(iso) {
@@ -106,9 +119,80 @@ function shortenTime(val) {
   return s;
 }
 
-function setActiveButton(mode) {
-  btnFast.classList.toggle("active", mode === "fast");
-  btnFull.classList.toggle("active", mode === "full");
+function boardLimit(board) {
+  return board === "7d" ? boardSettings.dayLimit : boardSettings.allLimit;
+}
+
+function boardLabel(board) {
+  const n = boardLimit(board);
+  return board === "7d" ? `7日榜前${n}` : `总榜前${n}`;
+}
+
+function applySettingsToUi(s) {
+  boardSettings.allLimit = Number(s.allLimit) || 20;
+  boardSettings.dayLimit = Number(s.dayLimit) || 50;
+  if (setAllLimit) setAllLimit.value = String(boardSettings.allLimit);
+  if (setDayLimit) setDayLimit.value = String(boardSettings.dayLimit);
+  if (hintAllFast) hintAllFast.textContent = `前${boardSettings.allLimit}`;
+  if (hint7dFast) hint7dFast.textContent = `前${boardSettings.dayLimit}`;
+}
+
+async function loadSettings() {
+  try {
+    const res = await fetch("/api/settings");
+    const data = await res.json();
+    if (data && data.ok) applySettingsToUi(data);
+  } catch {
+    applySettingsToUi(boardSettings);
+  }
+}
+
+async function saveBoardSettings() {
+  const allLimit = Number(setAllLimit?.value);
+  const dayLimit = Number(setDayLimit?.value);
+  const res = await fetch("/api/settings", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ allLimit, dayLimit }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data.ok) throw new Error(data.detail || data.message || "保存设置失败");
+  applySettingsToUi(data);
+  setJobStatus(`设置已保存 · 总榜前${data.allLimit} / 日榜前${data.dayLimit}`);
+}
+
+function setActiveButton(board) {
+  activeBoard = board === "7d" ? "7d" : "all";
+  activeMode = "fast";
+  navButtons.forEach((btn) => {
+    if (!btn) return;
+    const b = btn.dataset.board || "all";
+    btn.classList.toggle("active", b === activeBoard);
+  });
+}
+
+function filterRows(rows) {
+  const f = getActiveFilters();
+  if (!hasAnyFilter(f)) return { rows, filtered: false, total: rows.length };
+  const out = rows.filter((row) => {
+    const mcap = parseNumber(row["市值"]);
+    const hold = parseNumber(row["持仓市值"]);
+    const count = parseNumber(row["持仓人数"]);
+    return (
+      inRange(mcap, f.mcapMin, f.mcapMax) &&
+      inRange(hold, f.holdMin, f.holdMax) &&
+      inRange(count, f.countMin, f.countMax)
+    );
+  });
+  return { rows: out, filtered: true, total: rows.length };
+}
+
+function updateFilterSummary(shown, total, filtered) {
+  if (!filtered) {
+    filterSummary.textContent = total ? `未筛选 · ${total} 条` : "";
+    return;
+  }
+  filterSummary.textContent = `已筛选 · ${shown}/${total}`;
 }
 
 /** Parse numbers like 12.1M, 887K, 12.1M(2.44%), plain ints. */
@@ -117,7 +201,8 @@ function parseNumber(value) {
   if (typeof value === "number" && Number.isFinite(value)) return value;
   let text = String(value).trim().replace(/\$/g, "").replace(/,/g, "").replace(/\s/g, "");
   if (!text || text === "-") return null;
-  text = text.replace(/\([^)]*%\)$/, "");
+  text = text.replace(/\([^)]*\)$/, "");
+  if (text.endsWith("%")) text = text.slice(0, -1);
   let multiplier = 1;
   const upper = text.toUpperCase();
   if (upper.endsWith("B")) {
@@ -191,33 +276,61 @@ function inRange(value, min, max) {
   return true;
 }
 
-function filterRows(rows, mode) {
-  if (mode !== "full") return { rows, filtered: false, total: rows.length };
-  const f = getActiveFilters();
-  if (!hasAnyFilter(f)) return { rows, filtered: false, total: rows.length };
-  const out = rows.filter((row) => {
-    const mcap = parseNumber(row["市值"]);
-    const hold = parseNumber(row["持仓市值"]);
-    const count = parseNumber(row["持仓人数"]);
-    return (
-      inRange(mcap, f.mcapMin, f.mcapMax) &&
-      inRange(hold, f.holdMin, f.holdMax) &&
-      inRange(count, f.countMin, f.countMax)
-    );
-  });
-  return { rows: out, filtered: true, total: rows.length };
+function compareSortValues(a, b, col, dir) {
+  const mul = dir === "asc" ? 1 : -1;
+  const av = a?.[col];
+  const bv = b?.[col];
+  if (NUM_COLS.has(col) || col === "创建时间") {
+    const an = col === "创建时间" ? Date.parse(String(av || "")) || 0 : parseNumber(av);
+    const bn = col === "创建时间" ? Date.parse(String(bv || "")) || 0 : parseNumber(bv);
+    const aEmpty = an == null;
+    const bEmpty = bn == null;
+    if (aEmpty && bEmpty) return 0;
+    if (aEmpty) return 1;
+    if (bEmpty) return -1;
+    if (an === bn) return 0;
+    return an < bn ? -1 * mul : 1 * mul;
+  }
+  const as = String(av ?? "").trim();
+  const bs = String(bv ?? "").trim();
+  if (!as && !bs) return 0;
+  if (!as) return 1;
+  if (!bs) return -1;
+  return as.localeCompare(bs, "zh-CN", { numeric: true, sensitivity: "base" }) * mul;
 }
 
-function updateFilterSummary(shown, total, mode, filtered) {
-  if (mode !== "full") {
-    filterSummary.textContent = "快速模式不应用筛选";
-    return;
+function sortRows(rows) {
+  if (!sortState.col || !sortState.dir) return rows;
+  const col = sortState.col;
+  const dir = sortState.dir;
+  return rows
+    .map((row, i) => ({ row, i }))
+    .sort((x, y) => {
+      const c = compareSortValues(x.row, y.row, col, dir);
+      return c !== 0 ? c : x.i - y.i;
+    })
+    .map((x) => x.row);
+}
+
+function sortIndicator(col) {
+  if (sortState.col !== col || !sortState.dir) return "";
+  return sortState.dir === "asc" ? " ↑" : " ↓";
+}
+
+function onHeaderClick(col) {
+  if (sortState.col !== col) {
+    sortState = {
+      col,
+      dir: NUM_COLS.has(col) || col === "创建时间" ? "desc" : "asc",
+    };
+  } else if (sortState.dir === "desc") {
+    sortState = { col, dir: "asc" };
+  } else if (sortState.dir === "asc") {
+    sortState = { col: null, dir: null };
+  } else {
+    sortState = { col, dir: "desc" };
   }
-  if (!filtered) {
-    filterSummary.textContent = total ? `未筛选 · ${total} 条` : "";
-    return;
-  }
-  filterSummary.textContent = `已筛选 · ${shown}/${total}`;
+  if (lastPayload) renderTable(lastPayload);
 }
 
 function renameLegacyRow(row) {
@@ -244,21 +357,23 @@ function renderTable(payload) {
   payload = normalizePayload(payload);
   lastPayload = payload;
   const allRows = payload.rows || [];
-  const mode = payload.mode || "fast";
-  const { rows, filtered, total } = filterRows(allRows, mode);
+  const board = payload.board || activeBoard || "all";
+  const label = payload.boardLabel || boardLabel(board);
+  const filteredResult = filterRows(allRows);
+  const rows = sortRows(filteredResult.rows);
+  const filtered = filteredResult.filtered;
+  const total = filteredResult.total;
   const cols = COLUMNS.slice();
 
-  panelTitle.textContent = mode === "full" ? "Fomo总榜前20 · 全量" : "Fomo总榜前20 · 快速";
+  panelTitle.textContent = label;
   panelNote.textContent =
     payload.note ||
-    (mode === "full"
-      ? "全量模式：官方 balances；市值本地缓存（单币≥10分钟）；最高市值缓存。"
-      : "快速模式：spotlight 估算；市值本地缓存（单币≥10分钟）；最高市值优先缓存。");
+    `${label}：登录态用 balances 实时开仓；未登录才用 spotlight（可能滞后）。`;
   updatedAt.textContent = `更新 ${formatTime(payload.updatedAt)}`;
   tokenCount.textContent = filtered ? `${rows.length}/${total} tokens` : `${payload.tokenCount || rows.length} tokens`;
-  modeChip.textContent = `mode ${mode}`;
-  setActiveButton(mode);
-  updateFilterSummary(rows.length, total, mode, filtered);
+  modeChip.textContent = board === "7d" ? "7d" : "all";
+  setActiveButton(board);
+  updateFilterSummary(rows.length, total, filtered);
 
   if (!rows.length) {
     emptyState.classList.remove("hidden");
@@ -271,14 +386,23 @@ function renderTable(payload) {
   emptyState.classList.add("hidden");
   tableWrap.classList.remove("hidden");
 
-  thead.innerHTML = `<tr>${cols.map((c) => `<th>${c}</th>`).join("")}</tr>`;
+  thead.innerHTML = `<tr>${cols
+    .map((c) => {
+      const active = sortState.col === c && sortState.dir ? " sorted" : "";
+      const aria =
+        sortState.col === c && sortState.dir
+          ? ` aria-sort="${sortState.dir === "asc" ? "ascending" : "descending"}"`
+          : ' aria-sort="none"';
+      return `<th class="sortable${active}" data-col="${escapeHtml(c)}"${aria} title="点击排序"><span class="th-label">${escapeHtml(c)}</span><span class="th-sort">${sortIndicator(c)}</span></th>`;
+    })
+    .join("")}</tr>`;
   hideRowTip();
   tbody.innerHTML = rows
     .map((row, idx) => {
       const tds = cols
         .map((c) => {
           let val = row[c] ?? "";
-          if (c === "最高市值时间") val = shortenTime(val);
+          if (c === "创建时间") val = shortenTime(val);
           let cls = "";
           if (NUM_COLS.has(c)) cls = "num";
           if (c === "所有持仓人") {
@@ -367,6 +491,8 @@ function holdersTableText(val) {
 
 function showRowTip(row, tr, clientX, clientY) {
   const name = row["名称"] || "—";
+  const platform = row["发射平台"] || "—";
+  const createdAt = shortenTime(row["创建时间"]) || "—";
   const hiPerson = row["最高持仓人"] || "—";
   const hiVal = row["最高持仓市值"] || "—";
   const loPerson = row["最低持仓人"] || "—";
@@ -383,6 +509,8 @@ function showRowTip(row, tr, clientX, clientY) {
 
   rowTip.innerHTML = `
     <div class="row-tip-line row-tip-name">${escapeHtml(String(name))}</div>
+    <div class="row-tip-line"><span class="row-tip-label">平台</span>${escapeHtml(String(platform))}</div>
+    <div class="row-tip-line"><span class="row-tip-label">创建时间</span>${escapeHtml(String(createdAt))}</div>
     <div class="row-tip-line"><span class="row-tip-label">最高</span>${escapeHtml(`${hiPerson}  ${hiVal}`)}</div>
     <div class="row-tip-line"><span class="row-tip-label">最低</span>${escapeHtml(`${loPerson}  ${loVal}`)}</div>
     <div class="row-tip-line">
@@ -432,7 +560,7 @@ function applyFilters() {
   const values = readFilterInputs();
   saveStoredFilters(values);
   if (lastPayload) renderTable(lastPayload);
-  else updateFilterSummary(0, 0, activeMode, hasAnyFilter(getActiveFilters()));
+  else updateFilterSummary(0, 0, hasAnyFilter(getActiveFilters()));
 }
 
 function resetFilters() {
@@ -490,16 +618,19 @@ async function clearAuth() {
   await refreshAuthStatus();
 }
 
-async function loadCached() {
+async function loadCached(board = activeBoard) {
   try {
-    const res = await fetch("/api/fomo-top20/cached");
+    const res = await fetch(`/api/fomo-top20/cached?board=${encodeURIComponent(board)}`);
     const data = await res.json();
     if (data.ok && data.rows && data.rows.length) {
       renderTable(data);
       setJobStatus(`缓存 · ${formatTime(data.updatedAt)}`);
+      return true;
     }
+    return false;
   } catch (e) {
     setJobStatus("缓存读取失败", "error");
+    return false;
   }
 }
 
@@ -517,11 +648,12 @@ async function pollUntilDone() {
   showLoading(false);
   if (st.status === "error") {
     setJobStatus(st.error || "失败", "error");
-    setActiveButton(activeMode);
+    setActiveButton(activeBoard);
     return;
   }
 
-  const resultRes = await fetch("/api/fomo-top20/result");
+  const board = st.board || activeBoard;
+  const resultRes = await fetch(`/api/fomo-top20/result?board=${encodeURIComponent(board)}`);
   if (!resultRes.ok) {
     const err = await resultRes.json().catch(() => ({}));
     setJobStatus(err.detail || "获取结果失败", "error");
@@ -533,18 +665,21 @@ async function pollUntilDone() {
   setJobStatus(`完成 · ${payload.elapsedSec ?? "?"}s${fail}`);
 }
 
-async function refreshTop20(mode) {
-  activeMode = mode;
-  setActiveButton(mode);
-  showLoading(true, mode === "full" ? "全量拉取中…" : "快速拉取中…");
-  setJobStatus(mode === "full" ? "全量刷新…" : "快速刷新…", "running");
+async function refreshBoard(board) {
+  activeBoard = board === "7d" ? "7d" : "all";
+  activeMode = "fast";
+  setActiveButton(activeBoard);
+  const limit = boardLimit(activeBoard);
+  const label = boardLabel(activeBoard);
+  showLoading(true, `${label} 拉取中…`);
+  setJobStatus(`${label} 刷新…`, "running");
   if (pollTimer) clearTimeout(pollTimer);
 
   try {
     const res = await fetch("/api/fomo-top20/refresh", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ mode }),
+      body: JSON.stringify({ mode: "fast", board: activeBoard, limit }),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.detail || data.message || "无法启动刷新");
@@ -556,16 +691,33 @@ async function refreshTop20(mode) {
   }
 }
 
-btnFast.addEventListener("click", () => refreshTop20("fast"));
-btnFull.addEventListener("click", () => refreshTop20("full"));
+btnFast.addEventListener("click", () => refreshBoard("all"));
+btn7d.addEventListener("click", () => refreshBoard("7d"));
 btnSaveAuth.addEventListener("click", () => saveAuth().catch((e) => setJobStatus(String(e), "error")));
 btnClearAuth.addEventListener("click", () => clearAuth().catch((e) => setJobStatus(String(e), "error")));
+btnSaveSettings.addEventListener("click", () =>
+  saveBoardSettings().catch((e) => setJobStatus(String(e), "error"))
+);
 btnApplyFilter.addEventListener("click", applyFilters);
 btnResetFilter.addEventListener("click", resetFilters);
 for (const f of FILTER_FIELDS) {
   document.getElementById(f.id).addEventListener("keydown", (e) => {
     if (e.key === "Enter") applyFilters();
   });
+}
+[setAllLimit, setDayLimit].forEach((el) => {
+  if (!el) return;
+  el.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      saveBoardSettings().catch((err) => setJobStatus(String(err), "error"));
+    }
+  });
+});
+
+function getDisplayRows(payload = lastPayload) {
+  if (!payload) return [];
+  const { rows } = filterRows(payload.rows || []);
+  return sortRows(rows);
 }
 
 tbody.addEventListener("click", async (e) => {
@@ -593,8 +745,7 @@ tbody.addEventListener("click", async (e) => {
   const tr = e.target.closest("tr[data-row-idx]");
   if (!tr || !lastPayload) return;
   const idx = Number(tr.dataset.rowIdx);
-  const mode = lastPayload.mode || "fast";
-  const { rows } = filterRows(lastPayload.rows || [], mode);
+  const rows = getDisplayRows(lastPayload);
   const row = rows[idx];
   if (!row) return;
 
@@ -603,6 +754,12 @@ tbody.addEventListener("click", async (e) => {
     return;
   }
   showRowTip(row, tr, e.clientX, e.clientY);
+});
+
+thead.addEventListener("click", (e) => {
+  const th = e.target.closest("th.sortable[data-col]");
+  if (!th) return;
+  onHeaderClick(th.getAttribute("data-col"));
 });
 
 document.addEventListener("click", (e) => {
@@ -615,5 +772,7 @@ document.addEventListener("keydown", (e) => {
 });
 
 loadStoredFilters();
-refreshAuthStatus();
-loadCached();
+loadSettings().then(() => {
+  refreshAuthStatus();
+  loadCached();
+});

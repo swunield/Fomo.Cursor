@@ -19,16 +19,17 @@ LIVE_MCAP_CACHE_PATH = OUT / "fomo_mcap_live_cache.json"
 # Per-token DexScreener 市值最小拉取间隔
 LIVE_MCAP_MIN_INTERVAL_SEC = 10 * 60
 
-MCAP_COLS = ("市值", "最高市值", "最高市值时间")
+MCAP_COLS = ("市值", "成交量", "24h涨跌", "创建时间")
 # Canonical CSV / Markdown / JSON display column order (user-defined).
 CSV_COLUMNS = (
     "名称",
     "市值",
+    "成交量",
+    "24h涨跌",
     "持仓市值",
     "持仓人数",
     "人均持仓市值",
-    "最高市值",
-    "最高市值时间",
+    "创建时间",
     "最高持仓人",
     "最高持仓市值",
     "最低持仓人",
@@ -54,9 +55,10 @@ VALUE_COLS = (
     "持仓市值",
     "人均持仓市值",
     "市值",
-    "最高市值",
+    "成交量",
 )
 HOLDING_VALUE_COLS = ("最高持仓市值", "最低持仓市值")
+CHANGE_COLS = ("24h涨跌",)
 HOLDER_COLS = ("所有持仓人", "最高持仓人", "最低持仓人")
 GECKO_NETWORKS = {
     "solana": "solana",
@@ -483,8 +485,8 @@ def parse_number(value):
     text = str(value).strip().replace("$", "").replace(",", "").replace(" ", "")
     if not text or text == "-":
         return None
-    # strip trailing "(x%)" if present: 12.1M(2.4%) -> 12.1M
-    text = re.sub(r"\([^)]*%\)$", "", text)
+    # strip trailing "(pct)" if present: 12.1M(2.4%) / 6.3M(-) -> 12.1M / 6.3M
+    text = re.sub(r"\([^)]*\)$", "", text)
     multiplier = 1.0
     upper = text.upper()
     if upper.endswith("B"):
@@ -513,6 +515,29 @@ def fmt_km(value):
     if n >= 1_000:
         return f"{sign}{int(round(n / 1e3))}K"
     return f"{sign}{int(round(n))}"
+
+
+def fmt_change24(value):
+    """Format FOMO change24 (ratio or percent) as +12.34% / -5.67%."""
+    if value is None or value == "":
+        return ""
+    if isinstance(value, str):
+        text = value.strip()
+        if text.endswith("%"):
+            return text
+        try:
+            num = float(text)
+        except ValueError:
+            return text
+    else:
+        try:
+            num = float(value)
+        except (TypeError, ValueError):
+            return str(value)
+    # FOMO tokenFilterResult.change24 is typically a ratio like -0.21
+    if abs(num) <= 1.5:
+        num *= 100.0
+    return f"{num:+.2f}%"
 
 
 def fmt_holding_with_mcap_pct(holding_value, market_cap):
@@ -615,6 +640,9 @@ def normalize_row_display(row):
     for col in VALUE_COLS:
         if col in row:
             row[col] = fmt_km(row.get(col))
+    for col in CHANGE_COLS:
+        if col in row:
+            row[col] = fmt_change24(row.get(col))
     mcap = row.get("市值")
     for col in HOLDING_VALUE_COLS:
         if col in row:

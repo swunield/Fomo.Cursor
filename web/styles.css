@@ -393,6 +393,32 @@ thead th {
   white-space: nowrap;
 }
 
+thead th.sortable {
+  cursor: pointer;
+  user-select: none;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+
+thead th.sortable:hover {
+  color: #e8f5e0;
+  background: #202a23;
+}
+
+thead th.sortable.sorted {
+  color: #d7f0c8;
+}
+
+thead th .th-sort {
+  display: inline-block;
+  min-width: 0.9em;
+  color: var(--muted);
+  font-weight: 500;
+}
+
+thead th.sorted .th-sort {
+  color: var(--accent);
+}
+
 tbody td {
   padding: 11px 14px;
   border-bottom: 1px solid rgba(36, 48, 40, 0.85);
