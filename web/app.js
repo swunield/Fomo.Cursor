@@ -83,6 +83,10 @@ const btnSaveSettings = document.getElementById("btn-save-settings");
 const hintAllFast = document.getElementById("hint-all-fast");
 const hint7dFast = document.getElementById("hint-7d-fast");
 const hint24hFast = document.getElementById("hint-24h-fast");
+const btnRefreshBoard = document.getElementById("btn-refresh-board");
+const fetchStatusEl = document.getElementById("fetch-status");
+
+const CACHE_STALE_MS = 10 * 60 * 1000;
 
 let pollTimer = null;
 let activeMode = "fast";
@@ -90,18 +94,41 @@ let activeBoard = "all";
 let lastPayload = null;
 let tipRowIndex = -1;
 let sortState = { col: null, dir: null }; // dir: 'asc' | 'desc'
+let refreshTargetBoard = null;
+let refreshSilent = false;
+let refreshBusy = false;
 
 function setJobStatus(text, mode = "") {
   jobStatus.textContent = text;
   jobStatus.className = "job-status" + (mode ? ` ${mode}` : "");
 }
 
+function setFetchStatus(text, mode = "") {
+  if (!fetchStatusEl) return;
+  fetchStatusEl.textContent = text || "";
+  fetchStatusEl.className = "fetch-status" + (mode ? ` ${mode}` : "");
+}
+
+function setRefreshBusy(busy) {
+  refreshBusy = !!busy;
+  if (btnRefreshBoard) btnRefreshBoard.disabled = refreshBusy;
+}
+
 function showLoading(show, text = "正在拉取…") {
-  loadingOverlay.classList.toggle("hidden", !show);
-  loadingText.textContent = text;
-  navButtons.forEach((btn) => {
-    if (btn) btn.disabled = show;
-  });
+  // 保留 DOM，但榜单拉取改为顶部文字进度，不再用遮罩打断浏览
+  if (loadingOverlay) loadingOverlay.classList.add("hidden");
+  if (loadingText) loadingText.textContent = text;
+}
+
+function cacheAgeMs(iso) {
+  if (!iso) return Number.POSITIVE_INFINITY;
+  const t = new Date(iso).getTime();
+  if (Number.isNaN(t)) return Number.POSITIVE_INFINITY;
+  return Date.now() - t;
+}
+
+function isCacheStale(iso) {
+  return cacheAgeMs(iso) > CACHE_STALE_MS;
 }
 
 function formatTime(iso) {
@@ -680,75 +707,202 @@ async function loadCached(board = activeBoard) {
     if (data.ok && data.rows && data.rows.length) {
       renderTable(data);
       setJobStatus(`缓存 · ${formatTime(data.updatedAt)}`);
-      return true;
+      return data;
     }
-    return false;
+    return null;
   } catch (e) {
     setJobStatus("缓存读取失败", "error");
-    return false;
+    return null;
   }
 }
 
 async function pollUntilDone() {
   const res = await fetch("/api/fomo-top20/status");
   const st = await res.json();
-  setJobStatus(st.progress || st.status, st.status === "error" ? "error" : "running");
-  loadingText.textContent = st.progress || "正在拉取…";
+  const jobBoard = normalizeBoard(st.board || refreshTargetBoard || activeBoard);
+  const progress = st.progress || st.status || "";
+  setJobStatus(progress, st.status === "error" ? "error" : "running");
 
   if (st.status === "running") {
+    setRefreshBusy(true);
+    if (jobBoard === activeBoard) {
+      setFetchStatus(progress, "running");
+    } else {
+      setFetchStatus(
+        `${boardLabel(jobBoard)} 更新中（当前看${boardLabel(activeBoard)}）…`,
+        "running"
+      );
+    }
     pollTimer = setTimeout(pollUntilDone, 900);
     return;
   }
 
-  showLoading(false);
+  setRefreshBusy(false);
+
   if (st.status === "error") {
-    setJobStatus(st.error || "失败", "error");
+    const err = st.error || "失败";
+    setJobStatus(err, "error");
+    if (jobBoard === activeBoard) {
+      setFetchStatus(err, "error");
+    } else {
+      setFetchStatus(`${boardLabel(jobBoard)} 失败：${err}`, "error");
+    }
     setActiveButton(activeBoard);
     return;
   }
 
-  const board = st.board || activeBoard;
-  const resultRes = await fetch(`/api/fomo-top20/result?board=${encodeURIComponent(board)}`);
+  // 仅当当前仍停留在该榜单时刷新表格
+  if (jobBoard !== activeBoard) {
+    setJobStatus(`完成 · ${boardLabel(jobBoard)}（后台）`);
+    setFetchStatus("");
+    return;
+  }
+
+  const resultRes = await fetch(`/api/fomo-top20/result?board=${encodeURIComponent(jobBoard)}`);
   if (!resultRes.ok) {
     const err = await resultRes.json().catch(() => ({}));
-    setJobStatus(err.detail || "获取结果失败", "error");
+    const msg = err.detail || "获取结果失败";
+    setJobStatus(msg, "error");
+    setFetchStatus(msg, "error");
     return;
   }
   const payload = await resultRes.json();
   renderTable(payload);
   const fail = payload.stats?.tradersFail ? ` · fail ${payload.stats.tradersFail}` : "";
-  setJobStatus(`完成 · ${payload.elapsedSec ?? "?"}s${fail}`);
+  const doneMsg = `完成 · ${payload.elapsedSec ?? "?"}s${fail}`;
+  setJobStatus(doneMsg);
+  setFetchStatus(refreshSilent ? `后台已更新 · ${formatTime(payload.updatedAt)}` : doneMsg);
+  if (refreshSilent) {
+    setTimeout(() => {
+      if (fetchStatusEl && fetchStatusEl.textContent.includes("后台已更新")) {
+        setFetchStatus("");
+      }
+    }, 4000);
+  }
 }
 
-async function refreshBoard(board) {
-  activeBoard = normalizeBoard(board);
-  activeMode = "fast";
-  setActiveButton(activeBoard);
-  const limit = boardLimit(activeBoard);
-  const label = boardLabel(activeBoard);
-  showLoading(true, `${label} 拉取中…`);
-  setJobStatus(`${label} 刷新…`, "running");
-  if (pollTimer) clearTimeout(pollTimer);
+function ensurePolling() {
+  if (pollTimer) return;
+  pollUntilDone();
+}
+
+async function startRefresh({ silent = false } = {}) {
+  const board = activeBoard;
+  const limit = boardLimit(board);
+  const label = boardLabel(board);
+  refreshSilent = !!silent;
+
+  setRefreshBusy(true);
+  const startMsg = silent ? `${label} 后台更新中…` : `${label} 拉取中…`;
+  setJobStatus(startMsg, "running");
+  setFetchStatus(startMsg, "running");
+  showLoading(false);
 
   try {
     const res = await fetch("/api/fomo-top20/refresh", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ mode: "fast", board: activeBoard, limit }),
+      body: JSON.stringify({ mode: "fast", board, limit }),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.detail || data.message || "无法启动刷新");
     if (!data.ok) throw new Error(data.message || "无法启动刷新");
+
+    if (data.started === false) {
+      const runningBoard = normalizeBoard(data.board || "");
+      if (runningBoard && runningBoard !== board) {
+        // 其他榜单任务进行中：保持禁用刷新，继续轮询，勿清掉已有轮询
+        refreshTargetBoard = runningBoard;
+        const msg = `${boardLabel(runningBoard)} 更新中，请稍后再刷新当前榜`;
+        setJobStatus(msg, "running");
+        setFetchStatus(msg, "running");
+        setRefreshBusy(true);
+        ensurePolling();
+        return;
+      }
+      // 同榜单任务已在跑
+      refreshTargetBoard = board;
+      setFetchStatus(`${label} 更新中…`, "running");
+      ensurePolling();
+      return;
+    }
+
+    refreshTargetBoard = board;
+    // 新任务：若已有轮询则复用，否则启动
+    if (pollTimer) {
+      clearTimeout(pollTimer);
+      pollTimer = null;
+    }
     pollUntilDone();
   } catch (e) {
-    showLoading(false);
-    setJobStatus(e.message || String(e), "error");
+    setRefreshBusy(false);
+    const msg = e.message || String(e);
+    setJobStatus(msg, "error");
+    setFetchStatus(msg, "error");
   }
 }
 
-btnFast?.addEventListener("click", () => refreshBoard("all"));
-btn7d?.addEventListener("click", () => refreshBoard("7d"));
-btn24h?.addEventListener("click", () => refreshBoard("24h"));
+async function selectBoard(board) {
+  activeBoard = normalizeBoard(board);
+  activeMode = "fast";
+  setActiveButton(activeBoard);
+  hideRowTip();
+
+  const cached = await loadCached(activeBoard);
+  if (!cached) {
+    setFetchStatus(`${boardLabel(activeBoard)} 无缓存，正在拉取…`, "running");
+    await startRefresh({ silent: false });
+    return;
+  }
+
+  if (isCacheStale(cached.updatedAt)) {
+    const ageMin = Math.round(cacheAgeMs(cached.updatedAt) / 60000);
+    setFetchStatus(`缓存约 ${ageMin} 分钟前，后台更新中…`, "running");
+    setJobStatus(`缓存 · ${formatTime(cached.updatedAt)} · 后台更新`, "running");
+    await startRefresh({ silent: true });
+    return;
+  }
+
+  // 有新鲜缓存：若别处仍在拉榜，刷新按钮保持禁用并继续轮询
+  try {
+    const stRes = await fetch("/api/fomo-top20/status");
+    const st = await stRes.json();
+    if (st.status === "running") {
+      const runningBoard = normalizeBoard(st.board || "");
+      refreshTargetBoard = runningBoard || refreshTargetBoard;
+      setRefreshBusy(true);
+      setFetchStatus(
+        `${boardLabel(runningBoard || "all")} 更新中（当前看${boardLabel(activeBoard)}）…`,
+        "running"
+      );
+      ensurePolling();
+      return;
+    }
+  } catch {
+    /* ignore */
+  }
+
+  setRefreshBusy(false);
+  setFetchStatus("");
+  setJobStatus(`缓存 · ${formatTime(cached.updatedAt)}`);
+}
+
+async function forceRefreshBoard() {
+  if (refreshBusy) return;
+  activeMode = "fast";
+  setActiveButton(activeBoard);
+  await startRefresh({ silent: false });
+}
+
+btnFast?.addEventListener("click", () => selectBoard("all"));
+btn7d?.addEventListener("click", () => selectBoard("7d"));
+btn24h?.addEventListener("click", () => selectBoard("24h"));
+btnRefreshBoard?.addEventListener("click", () =>
+  forceRefreshBoard().catch((e) => {
+    setJobStatus(String(e), "error");
+    setFetchStatus(String(e), "error");
+  })
+);
 btnSaveAuth.addEventListener("click", () => saveAuth().catch((e) => setJobStatus(String(e), "error")));
 btnClearAuth.addEventListener("click", () => clearAuth().catch((e) => setJobStatus(String(e), "error")));
 btnSaveSettings.addEventListener("click", () =>
@@ -830,5 +984,5 @@ document.addEventListener("keydown", (e) => {
 loadStoredFilters();
 loadSettings().then(() => {
   refreshAuthStatus();
-  loadCached();
+  selectBoard(activeBoard);
 });

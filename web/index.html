@@ -116,7 +116,7 @@
     <header class="topbar">
       <div>
         <h1 id="panel-title">数据区</h1>
-        <p id="panel-note" class="panel-note">点击左侧总榜 / 7日榜 / 24小时榜拉取数据；登录后使用实时 balances</p>
+        <p id="panel-note" class="panel-note">点击左侧榜单先展示缓存；超过 10 分钟会后台静默更新。顶部「刷新」可强制拉取最新。</p>
       </div>
       <div class="topbar-meta">
         <div id="mode-chip" class="meta-chip">board —</div>
@@ -124,6 +124,11 @@
         <div id="token-count" class="meta-chip">0 tokens</div>
       </div>
     </header>
+
+    <div class="table-toolbar">
+      <button id="btn-refresh-board" class="refresh-btn" type="button">刷新</button>
+      <div id="fetch-status" class="fetch-status" aria-live="polite"></div>
+    </div>
 
     <section class="table-shell">
       <div id="empty-state" class="empty-state">
