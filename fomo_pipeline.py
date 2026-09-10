@@ -253,19 +253,24 @@ def aggregate_rows(
         else:
             display = symbol or name or sample["displayName"]
 
+        holder_details = [
+            f"{h['rank']}.{h['name']} {fmt_holding_with_mcap_pct(h['value'], current_mcap)}"
+            for h in holders
+        ]
         row = {
-            "代币名称": display,
-            "代币当前市值": current_mcap if current_mcap else "",
-            "总持仓价值": total,
-            "总持仓人数": count,
-            "人均持仓价值": avg,
-            "代币最高市值": ath_mcap if ath_mcap else "",
-            "代币最高市值时间": ath_time or "",
+            "名称": display,
+            "市值": current_mcap if current_mcap else "",
+            "持仓市值": total,
+            "持仓人数": count,
+            "人均持仓市值": avg,
+            "最高市值": ath_mcap if ath_mcap else "",
+            "最高市值时间": ath_time or "",
             "最高持仓人": f"{hi['rank']}.{hi['name']}",
-            "最高持仓价值": hi["value"],
+            "最高持仓市值": hi["value"],
             "最低持仓人": f"{lo['rank']}.{lo['name']}",
-            "最低持仓价值": lo["value"],
-            "所有持仓人": " ".join(f"{h['rank']}.{h['name']}" for h in holders),
+            "最低持仓市值": lo["value"],
+            "所有持仓人": "\n".join(holder_details),
+            "持仓明细": holder_details,
             "发射平台": infer_platform(addr, sample.get("networkId"), meta),
             "合约地址": addr,
         }
@@ -275,14 +280,14 @@ def aggregate_rows(
     def sort_key(r):
         from update_token_marketcap import parse_number
 
-        return parse_number(r.get("总持仓价值")) or 0
+        return parse_number(r.get("持仓市值")) or 0
 
     rows.sort(key=sort_key, reverse=True)
     return rows
 
 
 def persist_outputs(traders: list[dict], rows: list[dict], meta: dict) -> None:
-    fieldnames = ordered_fieldnames(rows) if rows else list(CSV_COLUMNS)
+    fieldnames = list(CSV_COLUMNS)
     errors = []
     try:
         write_csv_rows(fieldnames, rows)
@@ -335,7 +340,14 @@ def load_cached_result() -> dict | None:
     if not path.exists():
         return None
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        from update_token_marketcap import CSV_COLUMNS, rename_legacy_row
+
+        data = json.loads(path.read_text(encoding="utf-8"))
+        for key in ("rows", "tokens"):
+            if key in data and isinstance(data[key], list):
+                data[key] = [rename_legacy_row(r) for r in data[key]]
+        data["columns"] = list(CSV_COLUMNS)
+        return data
     except Exception:
         return None
 
@@ -352,7 +364,7 @@ def run_pipeline(progress: Callable[[str], None] | None = None, mode: str = "fas
             addresses.append(holders[0]["tokenAddress"])
 
     if progress:
-        progress(f"正在拉取 {len(addresses)} 个代币当前市值…")
+        progress(f"正在拉取/命中缓存市值（{len(addresses)} 个，单币间隔≥10分钟）…")
     dex_data = fetch_dexscreener(addresses)
 
     if progress:
@@ -368,14 +380,14 @@ def run_pipeline(progress: Callable[[str], None] | None = None, mode: str = "fas
             "全量模式：使用你的 Privy Token 调用官方 balances。"
             "若某账号失败会记入 stats.errors；最高市值仍优先本地缓存。"
         )
-        note = "全量模式：持仓来自 FOMO balances；当前市值 DexScreener；最高市值缓存。"
+        note = "全量模式：持仓来自 FOMO balances；市值 DexScreener（本地缓存，单币≥10分钟）；最高市值缓存。"
     else:
         source = "985monitor FOMO spotlight + DexScreener (fast path ATH cache)"
         limitation = (
             "快速模式：spotlight 未平仓盈利仓估算，通常仅头部仓位。"
             "最高市值优先本地缓存，无历史源时初值=当前市值。"
         )
-        note = "快速模式：当前市值来自 DexScreener；最高市值来自本地缓存（无则≈当前市值）。"
+        note = "快速模式：市值 DexScreener（本地缓存，单币≥10分钟）；最高市值本地缓存。"
 
     result = {
         "updatedAt": updated_at,

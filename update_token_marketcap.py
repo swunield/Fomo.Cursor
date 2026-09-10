@@ -15,32 +15,48 @@ CSV_PATH = OUT / "fomo_top20_holdings_by_token.csv"
 JSON_PATH = OUT / "fomo_top20_holdings_by_token.json"
 MD_PATH = OUT / "fomo_top20_holdings_by_token.md"
 CACHE_PATH = OUT / "fomo_mcap_ath_cache.json"
+LIVE_MCAP_CACHE_PATH = OUT / "fomo_mcap_live_cache.json"
+# Per-token DexScreener 市值最小拉取间隔
+LIVE_MCAP_MIN_INTERVAL_SEC = 10 * 60
 
-MCAP_COLS = ("代币当前市值", "代币最高市值", "代币最高市值时间")
+MCAP_COLS = ("市值", "最高市值", "最高市值时间")
 # Canonical CSV / Markdown / JSON display column order (user-defined).
 CSV_COLUMNS = (
-    "代币名称",
-    "代币当前市值",
-    "总持仓价值",
-    "总持仓人数",
-    "人均持仓价值",
-    "代币最高市值",
-    "代币最高市值时间",
+    "名称",
+    "市值",
+    "持仓市值",
+    "持仓人数",
+    "人均持仓市值",
+    "最高市值",
+    "最高市值时间",
     "最高持仓人",
-    "最高持仓价值",
+    "最高持仓市值",
     "最低持仓人",
-    "最低持仓价值",
+    "最低持仓市值",
     "所有持仓人",
     "发射平台",
     "合约地址",
 )
+# Old → new (read legacy files without dropping columns).
+LEGACY_COL_RENAME = {
+    "代币名称": "名称",
+    "代币当前市值": "市值",
+    "总持仓价值": "持仓市值",
+    "持仓价值": "持仓市值",
+    "总持仓人数": "持仓人数",
+    "人均持仓价值": "人均持仓市值",
+    "代币最高市值": "最高市值",
+    "代币最高市值时间": "最高市值时间",
+    "最高持仓价值": "最高持仓市值",
+    "最低持仓价值": "最低持仓市值",
+}
 VALUE_COLS = (
-    "总持仓价值",
-    "人均持仓价值",
-    "代币当前市值",
-    "代币最高市值",
+    "持仓市值",
+    "人均持仓市值",
+    "市值",
+    "最高市值",
 )
-HOLDING_VALUE_COLS = ("最高持仓价值", "最低持仓价值")
+HOLDING_VALUE_COLS = ("最高持仓市值", "最低持仓市值")
 HOLDER_COLS = ("所有持仓人", "最高持仓人", "最低持仓人")
 GECKO_NETWORKS = {
     "solana": "solana",
@@ -96,6 +112,46 @@ def save_cache(cache):
         json.dump(cache, f, ensure_ascii=False, indent=2)
 
 
+def load_live_mcap_cache():
+    if LIVE_MCAP_CACHE_PATH.exists():
+        try:
+            with open(LIVE_MCAP_CACHE_PATH, encoding="utf-8") as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+def save_live_mcap_cache(cache):
+    cache["updatedAt"] = datetime.now(timezone.utc).isoformat()
+    with open(LIVE_MCAP_CACHE_PATH, "w", encoding="utf-8") as f:
+        json.dump(cache, f, ensure_ascii=False, indent=2)
+
+
+def _live_cache_age_sec(entry) -> float | None:
+    if not isinstance(entry, dict):
+        return None
+    fetched = entry.get("fetchedAt")
+    if not fetched:
+        return None
+    try:
+        if isinstance(fetched, (int, float)):
+            return max(0.0, time.time() - float(fetched))
+        ts = datetime.fromisoformat(str(fetched).replace("Z", "+00:00"))
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        return max(0.0, (datetime.now(timezone.utc) - ts).total_seconds())
+    except Exception:
+        return None
+
+
+def live_mcap_from_cache_entry(entry: dict) -> dict:
+    """Strip cache metadata; return DexScreener-shaped meta dict."""
+    skip = {"fetchedAt", "cachedAt", "source"}
+    return {k: v for k, v in entry.items() if k not in skip}
+
+
 def normalize_addr(addr):
     addr = (addr or "").strip()
     if addr.startswith("0x"):
@@ -119,7 +175,8 @@ def store_dex_pair(result, pair, wanted=None):
     prev = result.get(token)
     if prev and liquidity <= prev["liquidityUsd"]:
         return
-    # Meme/FOMO desks usually quote FDV as 市值 (e.g. BUN: mcap~5M vs fdv~18M).
+    # Prefer FDV when DexScreener circulating is incomplete; pump.fun full-mint
+    # FDV mistakes are corrected later via GeckoTerminal.
     circ = float(pair.get("marketCap") or 0)
     fdv = float(pair.get("fdv") or 0)
     mcap = fdv or circ
@@ -140,7 +197,84 @@ def store_dex_pair(result, pair, wanted=None):
     }
 
 
-def fetch_dexscreener(addresses):
+def fetch_gecko_token_mcap(network: str, address: str):
+    """Return (market_cap_usd, fdv_usd, price_usd) from GeckoTerminal token endpoint."""
+    if not network or not address:
+        return None, None, None
+    gecko_throttle()
+    data = get_json(
+        f"https://api.geckoterminal.com/api/v2/networks/{network}/tokens/{address}",
+        retries=GECKO_MAX_RETRIES,
+    )
+    attrs = (data.get("data") or {}).get("attributes") or {}
+
+    def _f(key):
+        try:
+            v = float(attrs.get(key) or 0)
+            return v if v > 0 else None
+        except (TypeError, ValueError):
+            return None
+
+    return _f("market_cap_usd"), _f("fdv_usd"), _f("price_usd")
+
+
+def needs_gecko_mcap_correction(addr: str, meta: dict | None) -> bool:
+    """DexScreener often quotes pump.fun with full 1B mint; FOMO uses circulating."""
+    if not meta:
+        return False
+    if meta.get("mcapSource") == "geckoterminal":
+        return False
+    addr = addr or ""
+    if addr.endswith("pump"):
+        return True
+    try:
+        price = float(meta.get("priceUsd") or 0)
+        mcap = float(meta.get("marketCap") or 0)
+    except (TypeError, ValueError):
+        return False
+    if price <= 0 or mcap <= 0:
+        return False
+    implied = mcap / price
+    return implied >= 400_000_000 and mcap >= 1_000_000
+
+
+def apply_gecko_mcap_correction(addr: str, meta: dict) -> dict:
+    network = infer_gecko_network(meta.get("chainId") or "", "")
+    if not network and (addr or "").endswith("pump"):
+        network = "solana"
+    if not network:
+        return meta
+    try:
+        gecko_mcap, gecko_fdv, gecko_price = fetch_gecko_token_mcap(network, addr)
+    except Exception as exc:
+        print(f"Gecko mcap failed for {addr[:12]}...: {exc}")
+        return meta
+    chosen = gecko_mcap or gecko_fdv
+    if not chosen:
+        return meta
+    out = dict(meta)
+    out["dexscreenerMarketCap"] = meta.get("marketCap")
+    out["marketCap"] = chosen
+    if gecko_mcap:
+        out["circulatingMarketCap"] = gecko_mcap
+    if gecko_fdv:
+        out["fdv"] = gecko_fdv
+    if gecko_price:
+        out["priceUsd"] = gecko_price
+    out["mcapSource"] = "geckoterminal"
+    return out
+
+
+
+def fetch_dexscreener(addresses, min_interval_sec: int | None = None, use_cache: bool = True):
+    """Fetch current mcap/meta from DexScreener with per-token local cache.
+
+    Tokens fetched within ``min_interval_sec`` (default 10 minutes) are served
+    from ``fomo_mcap_live_cache.json`` and not requested again.
+    """
+    if min_interval_sec is None:
+        min_interval_sec = LIVE_MCAP_MIN_INTERVAL_SEC
+
     result = {}
     unique = []
     seen = set()
@@ -150,8 +284,39 @@ def fetch_dexscreener(addresses):
             seen.add(key)
             unique.append(addr.strip())
 
-    for i in range(0, len(unique), 30):
-        batch = unique[i : i + 30]
+    live_cache = load_live_mcap_cache() if use_cache else {}
+    to_fetch = []
+    cache_hits = 0
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    for addr in unique:
+        key = normalize_addr(addr)
+        entry = live_cache.get(key)
+        age = _live_cache_age_sec(entry) if use_cache else None
+        if (
+            use_cache
+            and isinstance(entry, dict)
+            and entry.get("marketCap") is not None
+            and age is not None
+            and age < min_interval_sec
+            and (
+                entry.get("mcapSource") == "geckoterminal"
+                or not needs_gecko_mcap_correction(addr, entry)
+            )
+        ):
+            result[key] = live_mcap_from_cache_entry(entry)
+            cache_hits += 1
+        else:
+            to_fetch.append(addr)
+
+    if cache_hits or to_fetch:
+        print(
+            f"DexScreener: cache hit {cache_hits}, fetch {len(to_fetch)} "
+            f"(min interval {min_interval_sec // 60}m)"
+        )
+
+    for i in range(0, len(to_fetch), 30):
+        batch = to_fetch[i : i + 30]
         url = "https://api.dexscreener.com/latest/dex/tokens/" + ",".join(batch)
         try:
             data = get_json(url)
@@ -163,7 +328,7 @@ def fetch_dexscreener(addresses):
                 store_dex_pair(result, pair, wanted=addr)
         time.sleep(0.25)
 
-    missing = [addr for addr in unique if normalize_addr(addr) not in result]
+    missing = [addr for addr in to_fetch if normalize_addr(addr) not in result]
     for addr in missing:
         try:
             data = get_json(f"https://api.dexscreener.com/latest/dex/tokens/{addr}")
@@ -172,6 +337,34 @@ def fetch_dexscreener(addresses):
         except Exception as exc:
             print(f"DexScreener fallback failed for {addr[:12]}...: {exc}")
         time.sleep(0.2)
+
+    gecko_fixed = 0
+    for addr in to_fetch:
+        key = normalize_addr(addr)
+        meta = result.get(key)
+        if not meta:
+            continue
+        if needs_gecko_mcap_correction(addr, meta):
+            fixed = apply_gecko_mcap_correction(addr, meta)
+            if fixed.get("mcapSource") == "geckoterminal":
+                gecko_fixed += 1
+            result[key] = fixed
+    if gecko_fixed:
+        print(f"GeckoTerminal mcap corrections: {gecko_fixed}")
+
+    if use_cache:
+        for addr in to_fetch:
+            key = normalize_addr(addr)
+            meta = result.get(key)
+            if not meta:
+                continue
+            live_cache[key] = {
+                **meta,
+                "fetchedAt": now_iso,
+                "source": meta.get("mcapSource") or "dexscreener",
+            }
+        save_live_mcap_cache(live_cache)
+
     return result
 
 
@@ -357,25 +550,88 @@ def holder_label(value, holders):
     return by_name.get(text, text)
 
 
+def parse_holder_detail_line(line: str):
+    """Parse '1.Name 6.2M(1.57%)' -> (rank, name, value_text) or None."""
+    text = str(line or "").strip()
+    m = re.match(r"^(\d+)\.(.+?)\s+(\S+\([^)]*\))\s*$", text)
+    if not m:
+        return None
+    return int(m.group(1)), m.group(2).strip(), m.group(3).strip()
+
+
 def normalize_row_display(row):
-    holders = parse_holders(row.get("所有持仓人", ""))
-    if holders:
-        row["所有持仓人"] = " ".join(f"{rank}.{name}" for rank, name in holders)
-        row["最高持仓人"] = holder_label(row.get("最高持仓人"), holders)
-        row["最低持仓人"] = holder_label(row.get("最低持仓人"), holders)
+    details = row.get("持仓明细")
+    if isinstance(details, str) and details.strip():
+        details = [ln.strip() for ln in details.splitlines() if ln.strip()]
+        row["持仓明细"] = details
+
+    if isinstance(details, list) and details:
+        cleaned = []
+        name_labels = []
+        for line in details:
+            parsed = parse_holder_detail_line(line)
+            if parsed:
+                rank, name, val = parsed
+                cleaned.append(f"{rank}.{name} {val}")
+                name_labels.append(f"{rank}.{name}")
+            else:
+                # already 'rank.name' only
+                cleaned.append(str(line).strip())
+                name_labels.append(str(line).strip())
+        row["持仓明细"] = cleaned
+        # Persist rich lines in 所有持仓人 so tips survive even if 持仓明细 is dropped
+        row["所有持仓人"] = "\n".join(cleaned)
+        holders = []
+        for line in cleaned:
+            parsed = parse_holder_detail_line(line)
+            if parsed:
+                holders.append((parsed[0], parsed[1]))
+        if not holders:
+            holders = parse_holders(" ".join(name_labels))
+        if holders:
+            row["最高持仓人"] = holder_label(row.get("最高持仓人"), holders)
+            row["最低持仓人"] = holder_label(row.get("最低持仓人"), holders)
+    else:
+        raw_all = str(row.get("所有持仓人") or "")
+        if "\n" in raw_all and "(" in raw_all:
+            lines = [ln.strip() for ln in raw_all.splitlines() if ln.strip()]
+            row["持仓明细"] = lines
+            row["所有持仓人"] = "\n".join(lines)
+            holders = []
+            for line in lines:
+                parsed = parse_holder_detail_line(line)
+                if parsed:
+                    holders.append((parsed[0], parsed[1]))
+            if holders:
+                row["最高持仓人"] = holder_label(row.get("最高持仓人"), holders)
+                row["最低持仓人"] = holder_label(row.get("最低持仓人"), holders)
+        else:
+            holders = parse_holders(raw_all)
+            if holders:
+                row["所有持仓人"] = " ".join(f"{rank}.{name}" for rank, name in holders)
+                row["最高持仓人"] = holder_label(row.get("最高持仓人"), holders)
+                row["最低持仓人"] = holder_label(row.get("最低持仓人"), holders)
+
     for col in VALUE_COLS:
         if col in row:
             row[col] = fmt_km(row.get(col))
-    mcap = row.get("代币当前市值")
+    mcap = row.get("市值")
     for col in HOLDING_VALUE_COLS:
         if col in row:
             row[col] = fmt_holding_with_mcap_pct(row.get(col), mcap)
     return row
 
 
+def rename_legacy_row(row: dict) -> dict:
+    out = {}
+    for k, v in row.items():
+        out[LEGACY_COL_RENAME.get(k, k)] = v
+    return out
+
+
 def read_csv_rows():
     with open(CSV_PATH, encoding="utf-8-sig", newline="") as f:
-        return list(csv.DictReader(f))
+        return [rename_legacy_row(r) for r in csv.DictReader(f)]
 
 
 def ordered_fieldnames(rows):
@@ -484,16 +740,16 @@ def main():
 
         ath_mcap, ath_time = merge_ath(cache, addr, current_mcap, gecko_ath_mcap, gecko_ath_ts)
 
-        row["代币当前市值"] = fmt_km(current_mcap) if current_mcap else ""
-        row["代币最高市值"] = fmt_km(ath_mcap) if ath_mcap else ""
-        row["代币最高市值时间"] = ath_time or ""
+        row["市值"] = fmt_km(current_mcap) if current_mcap else ""
+        row["最高市值"] = fmt_km(ath_mcap) if ath_mcap else ""
+        row["最高市值时间"] = ath_time or ""
         normalize_row_display(row)
 
-        name = row.get("代币名称", addr[:10])
+        name = row.get("名称", addr[:10])
         print(
             f"  [{idx:02d}] {name[:24]:<24} "
-            f"当前 {row.get('代币当前市值') or '-':>10} "
-            f"最高 {row.get('代币最高市值') or '-':>10}"
+            f"当前 {row.get('市值') or '-':>10} "
+            f"最高 {row.get('最高市值') or '-':>10}"
         )
 
     save_cache(cache)
