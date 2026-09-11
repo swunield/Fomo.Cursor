@@ -2,8 +2,10 @@
 """FOMO authenticated API helpers (Privy Bearer token + optional Cookie)."""
 from __future__ import annotations
 
+import base64
 import json
 import re
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -12,6 +14,9 @@ ROOT = Path(__file__).resolve().parent
 AUTH_PATH = ROOT / "fomo_auth.json"
 TOKEN_META_CACHE_PATH = ROOT / "fomo_token_meta_cache.json"
 PROD_API = "https://prod-api.fomo.family"
+PRIVY_AUTH = "https://auth.privy.io"
+PRIVY_APP_ID = "cm6h485o300n3zj9yl6vpedq7"
+PRIVY_CLIENT_ID = "client-WY5gFSayQjxnQhG4rP6SnwPAyPZWZpNRhJ6b9rzMnYwqH"
 SUPPORTED_CHAINS = "1,56,143,4663,8453,1399811149"
 # Cloudflare / FOMO rejects modern curl JA3; chrome110 impersonation works.
 CURL_IMPERSONATE = "chrome110"
@@ -71,7 +76,86 @@ def parse_auth_blob(raw: str) -> dict:
     return {"accessToken": token, "cookie": cookie}
 
 
-def save_auth(token_or_curl: str, note: str = "") -> dict:
+def _unwrap_stored(value) -> str:
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        value = str(value)
+    text = value.strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in {'"', "'"}:
+        try:
+            decoded = json.loads(text) if text.startswith('"') else text[1:-1]
+            if isinstance(decoded, str):
+                text = decoded.strip()
+        except Exception:
+            text = text[1:-1].strip()
+    return text
+
+
+def _looks_jwt(value: str) -> bool:
+    return value.startswith("eyJ") and value.count(".") >= 2
+
+
+def extract_privy_session(
+    storage: dict | None = None,
+    *,
+    authorization_headers: list[str] | None = None,
+    authenticate_payload: dict | None = None,
+) -> dict:
+    """Pull access/refresh/identity tokens from browser storage or Privy payloads."""
+    access = ""
+    refresh = ""
+    identity = ""
+
+    for key, raw in (storage or {}).items():
+        if not isinstance(key, str):
+            continue
+        kl = key.lower()
+        val = _unwrap_stored(raw)
+        if not val:
+            continue
+        if "refresh_token" in kl or kl.endswith("refresh-token"):
+            refresh = refresh or val
+        elif "id-token" in kl or "id_token" in kl or "identity" in kl:
+            if _looks_jwt(val):
+                identity = identity or val
+        elif "privy:pat" in kl:
+            continue
+        elif "token" in kl and "privy" in kl and _looks_jwt(val):
+            access = access or val
+
+    if isinstance(authenticate_payload, dict):
+        tok = _unwrap_stored(
+            authenticate_payload.get("token")
+            or authenticate_payload.get("access_token")
+            or ""
+        )
+        if _looks_jwt(tok):
+            access = tok
+        rt = _unwrap_stored(authenticate_payload.get("refresh_token") or "")
+        if rt:
+            refresh = rt
+        ident = _unwrap_stored(authenticate_payload.get("identity_token") or "")
+        if _looks_jwt(ident):
+            identity = ident
+
+    if not access:
+        for header in authorization_headers or []:
+            text = _unwrap_stored(header)
+            if text.lower().startswith("bearer "):
+                text = text[7:].strip()
+            if _looks_jwt(text):
+                access = text
+                break
+
+    return {
+        "accessToken": access,
+        "refreshToken": refresh,
+        "identityToken": identity,
+    }
+
+
+def save_auth(token_or_curl: str, note: str = "", refresh_token: str = "") -> dict:
     parsed = parse_auth_blob(token_or_curl)
     token = parsed["accessToken"]
     cookie = parsed["cookie"]
@@ -81,6 +165,7 @@ def save_auth(token_or_curl: str, note: str = "") -> dict:
     data = {
         "accessToken": token or prev.get("accessToken") or "",
         "cookie": cookie or prev.get("cookie") or "",
+        "refreshToken": (refresh_token or prev.get("refreshToken") or "").strip(),
         "note": note
         or "From fomo.family DevTools (Authorization Bearer, optional Cookie)",
     }
@@ -89,6 +174,7 @@ def save_auth(token_or_curl: str, note: str = "") -> dict:
         "ok": True,
         "hasToken": bool(data["accessToken"]),
         "hasCookie": bool(data["cookie"]),
+        "hasRefresh": bool(data["refreshToken"]),
         "tokenPreview": _preview(data["accessToken"]),
     }
 
@@ -100,6 +186,11 @@ def clear_auth() -> None:
 
 def get_access_token() -> str | None:
     token = (load_auth().get("accessToken") or "").strip()
+    needs_refresh = (not token) or _jwt_expires_soon(token, skew_sec=60)
+    if needs_refresh and get_refresh_token():
+        refreshed = try_refresh_access_token()
+        if refreshed:
+            token = refreshed
     return token or None
 
 
@@ -108,23 +199,101 @@ def get_cookie() -> str | None:
     return cookie or None
 
 
+def get_refresh_token() -> str | None:
+    token = (load_auth().get("refreshToken") or "").strip()
+    return token or None
+
+
 def auth_status() -> dict:
-    token = get_access_token()
+    token = (load_auth().get("accessToken") or "").strip() or None
     cookie = get_cookie()
+    refresh = get_refresh_token()
     return {
         "configured": bool(token or cookie),
         "hasToken": bool(token),
         "hasCookie": bool(cookie),
+        "hasRefresh": bool(refresh),
         "tokenPreview": _preview(token or ""),
+        "tokenExpired": bool(token and _jwt_is_expired(token)),
         "authPath": str(AUTH_PATH.name),
     }
 
 
-def fomo_get(path: str, token: str | None = None, timeout: int = 40) -> dict:
+def _b64url_json(segment: str) -> dict:
+    pad = "=" * (-len(segment) % 4)
+    raw = json.loads(base64.urlsafe_b64decode(segment + pad).decode("utf-8"))
+    return raw if isinstance(raw, dict) else {}
+
+
+def _jwt_exp(token: str) -> int | None:
+    try:
+        payload = _b64url_json((token or "").split(".")[1])
+        exp = payload.get("exp")
+        return int(exp) if exp is not None else None
+    except Exception:
+        return None
+
+
+def _jwt_is_expired(token: str, skew_sec: int = 0) -> bool:
+    exp = _jwt_exp(token)
+    if not exp:
+        return False
+    return exp <= time.time() + skew_sec
+
+
+def _jwt_expires_soon(token: str, skew_sec: int = 60) -> bool:
+    return _jwt_is_expired(token, skew_sec=skew_sec)
+
+
+def try_refresh_access_token() -> str | None:
+    """Exchange stored Privy refresh token for a new access token. Rotates refresh."""
+    refresh = get_refresh_token()
+    if not refresh:
+        return None
+    try:
+        from curl_cffi import requests as crequests
+    except ImportError:
+        return None
+    headers = {
+        "accept": "application/json",
+        "content-type": "application/json",
+        "origin": "https://fomo.family",
+        "referer": "https://fomo.family/",
+        "privy-app-id": PRIVY_APP_ID,
+        "privy-client-id": PRIVY_CLIENT_ID,
+        "privy-client": "react-auth:3.34.0",
+        "authorization": f"Bearer {refresh}",
+    }
+    try:
+        resp = crequests.post(
+            f"{PRIVY_AUTH}/api/v1/sessions",
+            headers=headers,
+            json={},
+            impersonate=CURL_IMPERSONATE,
+            timeout=30,
+        )
+        data = resp.json() if resp.content else {}
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    extracted = extract_privy_session(authenticate_payload=data)
+    token = extracted["accessToken"]
+    if not token or resp.status_code >= 400:
+        return None
+    save_auth(
+        token,
+        note="Refreshed from Privy refresh_token",
+        refresh_token=extracted["refreshToken"] or refresh,
+    )
+    return token
+
+
+def fomo_get(path: str, token: str | None = None, timeout: int = 40, _retried: bool = False) -> dict:
     token = token if token is not None else get_access_token()
     cookie = get_cookie()
     if not token and not cookie:
-        raise RuntimeError("未配置 FOMO 登录态：请粘贴 Privy Access Token 或 Copy as cURL")
+        raise RuntimeError("未配置 FOMO 登录态：请点「用 Google 登录」，或粘贴 Privy Access Token / Copy as cURL")
     if not path.startswith("/"):
         path = "/" + path
     url = PROD_API + path
@@ -163,6 +332,14 @@ def fomo_get(path: str, token: str | None = None, timeout: int = 40) -> dict:
         body.setdefault("statusCode", resp.status_code)
         if resp.status_code >= 400 and "error" not in body and "success" not in body:
             body["error"] = body.get("message") or f"HTTP {resp.status_code}"
+        if (
+            not _retried
+            and resp.status_code in (401, 403)
+            and get_refresh_token()
+        ):
+            new_token = try_refresh_access_token()
+            if new_token:
+                return fomo_get(path, token=new_token, timeout=timeout, _retried=True)
         return body
     except Exception as exc:
         return {"error": str(exc), "statusCode": 0}
@@ -214,7 +391,7 @@ def fetch_user_balances(user_id: str, token: str | None = None) -> list[dict]:
         if code in (430, 431) or err == "unauthorized":
             hint = (
                 " 常见原因：Token 过期，或 TLS 指纹被拦（本项目需 curl_cffi chrome110）。"
-                " 请在已登录浏览器中对成功的 prod-api 请求 Copy as cURL，再粘贴到侧边栏。"
+                " 请点侧边栏「用 Google 登录」，或对成功的 prod-api 请求 Copy as cURL 再粘贴。"
             )
         raise RuntimeError(f"balances failed for {user_id}: HTTP {code} {err}.{hint}")
 
@@ -529,8 +706,8 @@ def test_auth(token: str | None = None) -> dict:
             "error": "unauthorized",
             "statusCode": status,
             "hint": (
-                "FOMO 返回 unauthorized。请用浏览器登录后，对状态为 200 的 "
-                "prod-api 请求 Copy as cURL 再保存。"
+                "FOMO 返回 unauthorized。请点「用 Google 登录」，"
+                "或对状态为 200 的 prod-api 请求 Copy as cURL 再保存。"
             ),
             "detail": {k: data.get(k) for k in ("error", "message", "statusCode") if k in data},
         }

@@ -12,6 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from fomo_auth import auth_status, clear_auth, save_auth, test_auth
+from fomo_google_login import login_status, request_cancel, start_google_login
 from fomo_pipeline import (
     load_cached_result,
     load_settings,
@@ -121,6 +122,21 @@ def api_auth_save(payload: AuthPayload):
 def api_auth_clear():
     clear_auth()
     return {"ok": True, **auth_status()}
+
+
+@app.post("/api/auth/google/start")
+def api_auth_google_start():
+    return start_google_login()
+
+
+@app.get("/api/auth/google/status")
+def api_auth_google_status():
+    return login_status()
+
+
+@app.post("/api/auth/google/cancel")
+def api_auth_google_cancel():
+    return request_cancel()
 
 
 @app.get("/api/settings")

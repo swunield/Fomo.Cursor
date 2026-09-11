@@ -72,6 +72,8 @@ const authStatus = document.getElementById("auth-status");
 const authToken = document.getElementById("auth-token");
 const btnSaveAuth = document.getElementById("btn-save-auth");
 const btnClearAuth = document.getElementById("btn-clear-auth");
+const btnGoogleAuth = document.getElementById("btn-google-auth");
+const btnCancelGoogle = document.getElementById("btn-cancel-google");
 const btnApplyFilter = document.getElementById("btn-apply-filter");
 const btnResetFilter = document.getElementById("btn-reset-filter");
 const filterSummary = document.getElementById("filter-summary");
@@ -97,6 +99,8 @@ let sortState = { col: null, dir: null }; // dir: 'asc' | 'desc'
 let refreshTargetBoard = null;
 let refreshSilent = false;
 let refreshBusy = false;
+let googlePollTimer = null;
+let googleLoginBusy = false;
 
 function setJobStatus(text, mode = "") {
   jobStatus.textContent = text;
@@ -657,8 +661,10 @@ async function refreshAuthStatus() {
     const res = await fetch("/api/auth/status");
     const data = await res.json();
     if (data.configured) {
-      authStatus.textContent = `已配置 · ${data.tokenPreview}`;
-      authStatus.className = "auth-status ok";
+      const expired = data.tokenExpired ? "（已过期，将尝试自动续期）" : "";
+      const refresh = data.hasRefresh ? " · 可自动续期" : "";
+      authStatus.textContent = `已配置 · ${data.tokenPreview}${expired}${refresh}`;
+      authStatus.className = data.tokenExpired ? "auth-status bad" : "auth-status ok";
     } else {
       authStatus.textContent = "未配置 Token";
       authStatus.className = "auth-status bad";
@@ -697,6 +703,95 @@ async function saveAuth() {
 async function clearAuth() {
   await fetch("/api/auth/clear", { method: "POST" });
   authToken.value = "";
+  await refreshAuthStatus();
+}
+
+function setGoogleLoginBusy(busy) {
+  googleLoginBusy = !!busy;
+  if (btnGoogleAuth) {
+    btnGoogleAuth.disabled = googleLoginBusy;
+    btnGoogleAuth.textContent = googleLoginBusy ? "等待登录…" : "用 Google 登录";
+  }
+  if (btnCancelGoogle) {
+    btnCancelGoogle.classList.toggle("hidden", !googleLoginBusy);
+  }
+}
+
+function stopGooglePoll() {
+  if (googlePollTimer) {
+    clearTimeout(googlePollTimer);
+    googlePollTimer = null;
+  }
+}
+
+async function startGoogleLogin() {
+  stopGooglePoll();
+  setGoogleLoginBusy(true);
+  authStatus.textContent = "正在打开 Chrome…";
+  authStatus.className = "auth-status pending";
+  try {
+    const res = await fetch("/api/auth/google/start", { method: "POST" });
+    const data = await res.json();
+    if (data.progress) {
+      authStatus.textContent = data.progress;
+      authStatus.className = "auth-status pending";
+    }
+    pollGoogleLogin();
+  } catch (e) {
+    setGoogleLoginBusy(false);
+    authStatus.textContent = String(e);
+    authStatus.className = "auth-status bad";
+  }
+}
+
+async function pollGoogleLogin() {
+  try {
+    const res = await fetch("/api/auth/google/status");
+    const data = await res.json();
+    if (data.status === "running") {
+      setGoogleLoginBusy(true);
+      authStatus.textContent = data.progress || "请在 Chrome 中完成 Google 登录…";
+      authStatus.className = "auth-status pending";
+      googlePollTimer = setTimeout(pollGoogleLogin, 1000);
+      return;
+    }
+    setGoogleLoginBusy(false);
+    stopGooglePoll();
+    if (data.status === "done") {
+      authToken.value = "";
+      await refreshAuthStatus();
+      if (data.testOk === false) {
+        authStatus.textContent = `已保存，但校验失败：${data.testError || "unknown"}`;
+        authStatus.className = "auth-status bad";
+      } else if (data.tokenPreview) {
+        authStatus.textContent = `已保存并校验通过 · ${data.tokenPreview}${
+          data.hasRefresh ? " · 可自动续期" : ""
+        }`;
+        authStatus.className = "auth-status ok";
+      }
+      return;
+    }
+    if (data.status === "error") {
+      authStatus.textContent = data.error || "登录失败";
+      authStatus.className = "auth-status bad";
+      return;
+    }
+    await refreshAuthStatus();
+  } catch (e) {
+    setGoogleLoginBusy(false);
+    authStatus.textContent = String(e);
+    authStatus.className = "auth-status bad";
+  }
+}
+
+async function cancelGoogleLogin() {
+  stopGooglePoll();
+  try {
+    await fetch("/api/auth/google/cancel", { method: "POST" });
+  } catch {
+    /* ignore */
+  }
+  setGoogleLoginBusy(false);
   await refreshAuthStatus();
 }
 
@@ -905,6 +1000,15 @@ btnRefreshBoard?.addEventListener("click", () =>
 );
 btnSaveAuth.addEventListener("click", () => saveAuth().catch((e) => setJobStatus(String(e), "error")));
 btnClearAuth.addEventListener("click", () => clearAuth().catch((e) => setJobStatus(String(e), "error")));
+btnGoogleAuth?.addEventListener("click", () =>
+  startGoogleLogin().catch((e) => {
+    setGoogleLoginBusy(false);
+    setJobStatus(String(e), "error");
+  })
+);
+btnCancelGoogle?.addEventListener("click", () =>
+  cancelGoogleLogin().catch((e) => setJobStatus(String(e), "error"))
+);
 btnSaveSettings.addEventListener("click", () =>
   saveBoardSettings().catch((e) => setJobStatus(String(e), "error"))
 );
@@ -985,4 +1089,10 @@ loadStoredFilters();
 loadSettings().then(() => {
   refreshAuthStatus();
   selectBoard(activeBoard);
+  fetch("/api/auth/google/status")
+    .then((r) => r.json())
+    .then((data) => {
+      if (data.status === "running") pollGoogleLogin();
+    })
+    .catch(() => {});
 });

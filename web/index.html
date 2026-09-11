@@ -57,15 +57,18 @@
     <section class="auth-box">
       <div class="auth-title">登录态</div>
       <div id="auth-status" class="auth-status">未配置 Token</div>
-      <textarea id="auth-token" class="auth-input" rows="4" placeholder="推荐：在 prod-api 成功请求上右键 Copy as cURL 整段粘贴&#10;或只粘贴 Bearer Token（eyJ...）"></textarea>
+      <div class="auth-actions">
+        <button id="btn-google-auth" class="auth-btn" type="button">用 Google 登录</button>
+        <button id="btn-cancel-google" class="auth-btn ghost hidden" type="button">取消</button>
+      </div>
+      <textarea id="auth-token" class="auth-input" rows="3" placeholder="也可粘贴 prod-api 的 Copy as cURL，或 Bearer Token（eyJ...）"></textarea>
       <div class="auth-actions">
         <button id="btn-save-auth" class="auth-btn" type="button">保存</button>
         <button id="btn-clear-auth" class="auth-btn ghost" type="button">清除</button>
       </div>
       <p class="auth-help">
-        必须复制<strong>状态码 200</strong>的 <code>prod-api.fomo.family</code> 请求
-        （不要复制 auth.privy.io）。右键 → Copy → <strong>Copy as cURL</strong> 整段粘贴最稳。
-        Token 约 1 小时过期。
+        点「用 Google 登录」会打开 Chrome，在 <code>fomo.family</code> 完成 Google 登录后自动保存 Token。
+        也可继续粘贴状态码 200 的 <code>prod-api.fomo.family</code> cURL。Token 约 1 小时过期，有 refresh 时会自动续期。
       </p>
     </section>
 

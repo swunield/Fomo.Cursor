@@ -1,0 +1,119 @@
+# -*- coding: utf-8 -*-
+from __future__ import annotations
+
+import tempfile
+import unittest
+from pathlib import Path
+
+import fomo_auth
+from fomo_auth import extract_privy_session, save_auth, load_auth
+from fomo_google_login import is_google_login_target, is_store_url
+
+
+class ExtractPrivySessionTests(unittest.TestCase):
+    def test_reads_standard_localstorage_keys(self):
+        got = extract_privy_session(
+            {
+                "privy:token": "eyJhbGciOiJaccess.aaa.bbb",
+                "privy:refresh_token": "rt-local",
+                "privy:id-token": "eyJhbGciOiJid.aaa.bbb",
+            }
+        )
+        self.assertEqual(got["accessToken"], "eyJhbGciOiJaccess.aaa.bbb")
+        self.assertEqual(got["refreshToken"], "rt-local")
+        self.assertEqual(got["identityToken"], "eyJhbGciOiJid.aaa.bbb")
+
+    def test_unwraps_json_quoted_values(self):
+        got = extract_privy_session(
+            {
+                "privy:token": '"eyJhbGciOiJquoted.aaa.bbb"',
+                "privy:refresh_token": '"rt-quoted"',
+            }
+        )
+        self.assertEqual(got["accessToken"], "eyJhbGciOiJquoted.aaa.bbb")
+        self.assertEqual(got["refreshToken"], "rt-quoted")
+
+    def test_falls_back_to_authorization_header(self):
+        got = extract_privy_session(
+            {},
+            authorization_headers=["Bearer eyJhbGciOiJhdr.aaa.bbb"],
+        )
+        self.assertEqual(got["accessToken"], "eyJhbGciOiJhdr.aaa.bbb")
+
+    def test_prefers_authenticate_payload(self):
+        got = extract_privy_session(
+            {"privy:token": "eyJhbGciOiJold.aaa.bbb"},
+            authenticate_payload={
+                "token": "eyJhbGciOiJnew.aaa.bbb",
+                "refresh_token": "rt-new",
+                "identity_token": "eyJhbGciOiJidn.aaa.bbb",
+            },
+        )
+        self.assertEqual(got["accessToken"], "eyJhbGciOiJnew.aaa.bbb")
+        self.assertEqual(got["refreshToken"], "rt-new")
+        self.assertEqual(got["identityToken"], "eyJhbGciOiJidn.aaa.bbb")
+
+    def test_ignores_non_jwt_storage_noise(self):
+        got = extract_privy_session(
+            {
+                "privy:ca-id": "d4869847-5de7-42c1-ac30-82a33e039734",
+                "theme": "dark",
+            }
+        )
+        self.assertEqual(got["accessToken"], "")
+        self.assertEqual(got["refreshToken"], "")
+
+
+class SaveAuthRefreshTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp()) / "fomo_auth.json"
+        self._orig = fomo_auth.AUTH_PATH
+        fomo_auth.AUTH_PATH = self.tmp
+
+    def tearDown(self):
+        fomo_auth.AUTH_PATH = self._orig
+        if self.tmp.exists():
+            self.tmp.unlink()
+        if self.tmp.parent.exists():
+            self.tmp.parent.rmdir()
+
+    def test_save_auth_keeps_refresh_token(self):
+        save_auth(
+            "eyJhbGciOiJsave.aaa.bbb",
+            refresh_token="rt-saved",
+            note="unit-test",
+        )
+        data = load_auth()
+        self.assertEqual(data["accessToken"], "eyJhbGciOiJsave.aaa.bbb")
+        self.assertEqual(data["refreshToken"], "rt-saved")
+
+
+class GoogleClickTargetTests(unittest.TestCase):
+    def test_rejects_google_play_store_badge(self):
+        self.assertTrue(is_store_url("https://play.google.com/store/apps/details?id=family.fomo.app"))
+        self.assertFalse(
+            is_google_login_target(
+                tag="a",
+                text="GET IT ON Google Play",
+                aria="Google Play",
+                href="https://play.google.com/store/apps/details?id=family.fomo.app",
+            )
+        )
+        self.assertFalse(
+            is_google_login_target(
+                tag="div",
+                text="Google Play",
+                href="https://play.google.com/store/apps/details?id=family.fomo.app",
+            )
+        )
+
+    def test_accepts_privy_google_login_button(self):
+        self.assertTrue(
+            is_google_login_target(tag="button", text="Continue with Google", href="")
+        )
+        self.assertTrue(is_google_login_target(tag="button", text="Google", href=""))
+        self.assertTrue(is_google_login_target(tag="button", text="使用 Google", href=""))
+
+
+if __name__ == "__main__":
+    unittest.main()

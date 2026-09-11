@@ -183,6 +183,7 @@ body {
 
 .auth-status.ok { color: var(--accent); }
 .auth-status.bad { color: var(--danger); }
+.auth-status.pending { color: var(--accent); }
 
 .auth-input {
   width: 100%;
@@ -215,6 +216,16 @@ body {
   background: transparent;
   border-color: var(--line);
   color: var(--muted);
+}
+
+.auth-btn:disabled {
+  opacity: 0.5;
+  cursor: wait;
+}
+
+.auth-btn.hidden,
+.hidden {
+  display: none;
 }
 
 .auth-help {

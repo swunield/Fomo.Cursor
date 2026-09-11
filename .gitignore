@@ -1,4 +1,5 @@
 fomo_auth.json
+.playwright-fomo-chrome/
 __pycache__/
 *.pyc
 .tmp_fomo_js/
