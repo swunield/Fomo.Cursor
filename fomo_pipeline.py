@@ -92,6 +92,86 @@ NETWORK_HINTS = {
     101: "solana",
 }
 
+DEBOT_CHAIN_BY_NETWORK = {
+    1: "eth",
+    56: "bsc",
+    8453: "base",
+    42161: "arbitrum",
+    137: "polygon",
+    4663: "robinhood",
+    1399811149: "solana",
+    101: "solana",
+}
+
+
+def debot_chain(
+    addr: str = "",
+    platform: str = "",
+    network_id: Any = None,
+    chain_hint: str = "",
+) -> str:
+    """Debot URL chain slug for a token."""
+    try:
+        nid = int(network_id)
+    except (TypeError, ValueError):
+        nid = 0
+    if nid in DEBOT_CHAIN_BY_NETWORK:
+        return DEBOT_CHAIN_BY_NETWORK[nid]
+
+    hint = (chain_hint or "").strip().lower()
+    hint_map = {
+        "ethereum": "eth",
+        "eth": "eth",
+        "bsc": "bsc",
+        "base": "base",
+        "solana": "solana",
+        "robinhood": "robinhood",
+        "arbitrum": "arbitrum",
+        "polygon": "polygon",
+        "xlayer": "xlayer",
+    }
+    if hint in hint_map:
+        return hint_map[hint]
+
+    p = (platform or "").lower()
+    a = (addr or "").strip()
+    if "robinhood" in p or "pons" in p:
+        return "robinhood"
+    if a.lower().startswith("0x") and len(a) == 42 and a.lower().endswith("ffff"):
+        return "robinhood"
+    if "pump.fun" in p or "letsbonk" in p or "solana" in p:
+        return "solana"
+    if "bsc" in p or "pancake" in p:
+        return "bsc"
+    if "base" in p:
+        return "base"
+    if "ethereum" in p:
+        return "eth"
+    if "arbitrum" in p:
+        return "arbitrum"
+    if "polygon" in p:
+        return "polygon"
+    if a.startswith("0x"):
+        return ""
+    if a:
+        return "solana"
+    return ""
+
+
+def debot_token_url(
+    addr: str,
+    platform: str = "",
+    network_id: Any = None,
+    chain_hint: str = "",
+) -> str:
+    token = (addr or "").strip()
+    if not token:
+        return ""
+    chain = debot_chain(token, platform, network_id=network_id, chain_hint=chain_hint)
+    if not chain:
+        return ""
+    return f"https://debot.ai/token/{chain}/{token}"
+
 
 def estimate_holding_value(item: dict) -> float:
     unreal = float(item.get("unrealizedPnlUsd") or 0)
@@ -679,6 +759,7 @@ def aggregate_rows(
             for h in sorted(holders, key=lambda x: float(x.get("value") or 0), reverse=True)
         ]
         network_id = meta.get("networkId") if meta.get("networkId") is not None else sample.get("networkId")
+        platform = infer_platform(addr, network_id, meta)
         row = {
             "名称": display,
             "市值": current_mcap if current_mcap else "",
@@ -694,8 +775,9 @@ def aggregate_rows(
             "最低持仓市值": lo["value"],
             "所有持仓人": "\n".join(holder_details),
             "持仓明细": holder_details,
-            "发射平台": infer_platform(addr, network_id, meta),
+            "发射平台": platform,
             "合约地址": addr,
+            "debotChain": debot_chain(addr, platform, network_id=network_id),
         }
         normalize_row_display(row)
         rows.append(row)

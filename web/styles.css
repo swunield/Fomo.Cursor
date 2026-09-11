@@ -732,7 +732,8 @@ td.name-cell {
   text-overflow: ellipsis;
 }
 
-.copy-addr-btn {
+.copy-addr-btn,
+.debot-link-btn {
   appearance: none;
   flex: 0 0 auto;
   width: 22px;
@@ -746,10 +747,12 @@ td.name-cell {
   line-height: 1;
   display: inline-grid;
   place-items: center;
+  text-decoration: none;
   transition: border-color 0.15s, color 0.15s, background 0.15s;
 }
 
-.copy-addr-btn:hover {
+.copy-addr-btn:hover,
+.debot-link-btn:hover {
   border-color: #5a7a3a;
   color: var(--accent);
   background: var(--accent-dim);

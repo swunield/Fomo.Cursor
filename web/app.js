@@ -530,6 +530,55 @@ function normalizePayload(payload) {
   };
 }
 
+function debotChainSlug(addr, platform, chainHint) {
+  const hint = String(chainHint || "").trim().toLowerCase();
+  const hintMap = {
+    ethereum: "eth",
+    eth: "eth",
+    bsc: "bsc",
+    base: "base",
+    solana: "solana",
+    robinhood: "robinhood",
+    arbitrum: "arbitrum",
+    polygon: "polygon",
+    xlayer: "xlayer",
+  };
+  if (hintMap[hint]) return hintMap[hint];
+  const p = String(platform || "").toLowerCase();
+  const a = String(addr || "").trim();
+  if (p.includes("robinhood") || p.includes("pons")) return "robinhood";
+  if (a.toLowerCase().startsWith("0x") && a.length === 42 && a.toLowerCase().endsWith("ffff")) {
+    return "robinhood";
+  }
+  if (p.includes("pump.fun") || p.includes("letsbonk") || p.includes("solana")) return "solana";
+  if (p.includes("bsc") || p.includes("pancake")) return "bsc";
+  if (p.includes("base")) return "base";
+  if (p.includes("ethereum")) return "eth";
+  if (p.includes("arbitrum")) return "arbitrum";
+  if (p.includes("polygon")) return "polygon";
+  if (a.startsWith("0x")) return "";
+  if (a) return "solana";
+  return "";
+}
+
+function debotTokenUrl(addr, platform, chainHint) {
+  const token = String(addr || "").trim();
+  if (!token) return "";
+  const chain = debotChainSlug(token, platform, chainHint);
+  if (!chain) return "";
+  return `https://debot.ai/token/${encodeURIComponent(chain)}/${encodeURIComponent(token)}`;
+}
+
+function nameActionButtons(row) {
+  const addr = String(row["合约地址"] || "");
+  const addrAttr = addr.replace(/"/g, "&quot;");
+  const url = debotTokenUrl(addr, row["发射平台"], row.debotChain);
+  const debot = url
+    ? `<a class="debot-link-btn" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" title="在 Debot 打开" aria-label="在 Debot 打开">↗</a>`
+    : "";
+  return `<button type="button" class="copy-addr-btn" data-addr="${addrAttr}" title="复制合约地址" aria-label="复制合约地址">⧉</button>${debot}`;
+}
+
 function renderTable(payload) {
   payload = normalizePayload(payload);
   const board = normalizeBoard(payload.board || activeBoard || "all");
@@ -603,10 +652,9 @@ function renderTable(payload) {
           if (c === "合约地址") cls = "addr";
           const title = String(val).replace(/"/g, "&quot;");
           if (c === "名称") {
-            const addr = String(row["合约地址"] || "").replace(/"/g, "&quot;");
             const nameHtml = escapeHtml(String(val));
             return `<td class="name-cell" title="${title}">
-              <button type="button" class="copy-addr-btn" data-addr="${addr}" title="复制合约地址" aria-label="复制合约地址">⧉</button>
+              ${nameActionButtons(row)}
               <span class="name-text">${nameHtml}</span>
             </td>`;
           }
@@ -635,11 +683,10 @@ function renderCards(rows) {
   cardList.classList.remove("hidden");
   cardList.innerHTML = rows
     .map((row, idx) => {
-      const addr = String(row["合约地址"] || "").replace(/"/g, "&quot;");
       const chg = row["24h涨跌"] ?? "";
       return `<article class="token-card" data-row-idx="${idx}">
         <div class="token-card-head">
-          <button type="button" class="copy-addr-btn" data-addr="${addr}" title="复制合约地址" aria-label="复制合约地址">⧉</button>
+          ${nameActionButtons(row)}
           <div class="token-card-name">${escapeHtml(String(row["名称"] ?? ""))}</div>
           <div class="num chg ${chgClass(chg)}">${escapeHtml(String(chg))}</div>
         </div>
@@ -1381,6 +1428,10 @@ function getDisplayRows(payload = lastPayload) {
 }
 
 tbody.addEventListener("click", async (e) => {
+  if (e.target.closest(".debot-link-btn")) {
+    e.stopPropagation();
+    return;
+  }
   const btn = e.target.closest(".copy-addr-btn");
   if (btn) {
     e.preventDefault();
@@ -1417,6 +1468,10 @@ tbody.addEventListener("click", async (e) => {
 });
 
 cardList?.addEventListener("click", async (e) => {
+  if (e.target.closest(".debot-link-btn")) {
+    e.stopPropagation();
+    return;
+  }
   const btn = e.target.closest(".copy-addr-btn");
   if (btn) {
     e.preventDefault();
