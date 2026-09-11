@@ -34,25 +34,10 @@
       </button>
     </nav>
 
-    <section class="filter-box" id="board-settings-box">
-      <div class="auth-title">设置</div>
-      <p class="filter-help">榜单取前 N 名交易员（1–200）</p>
-      <label class="filter-row">
-        <span>总榜人数</span>
-        <input id="set-all-limit" class="filter-input" type="number" min="1" max="200" step="1" value="20" />
-      </label>
-      <label class="filter-row">
-        <span>7日榜人数</span>
-        <input id="set-day-limit" class="filter-input" type="number" min="1" max="200" step="1" value="50" />
-      </label>
-      <label class="filter-row">
-        <span>24小时人数</span>
-        <input id="set-h24-limit" class="filter-input" type="number" min="1" max="200" step="1" value="50" />
-      </label>
-      <div class="auth-actions">
-        <button id="btn-save-settings" class="auth-btn" type="button">保存设置</button>
-      </div>
-    </section>
+    <button id="btn-open-settings" class="nav-btn" type="button">
+      <span class="nav-btn-label">设置</span>
+      <span class="nav-btn-hint" id="settings-btn-hint">人数与筛选</span>
+    </button>
 
     <section class="auth-box">
       <div class="auth-title">登录态</div>
@@ -70,44 +55,6 @@
         点「用 Google 登录」会打开 Chrome，在 <code>fomo.family</code> 完成 Google 登录后自动保存 Token。
         也可继续粘贴状态码 200 的 <code>prod-api.fomo.family</code> cURL。Token 约 1 小时过期，有 refresh 时会自动续期。
       </p>
-    </section>
-
-    <section class="filter-box" id="token-filter-box">
-      <div class="auth-title">代币筛选</div>
-      <p class="filter-help">作用于当前总榜/7日榜/24小时榜结果；留空不限。市值支持 K/M，如 <code>500K</code>、<code>10M</code></p>
-
-      <label class="filter-row">
-        <span>市值区间</span>
-        <div class="filter-range">
-          <input id="flt-mcap-min" class="filter-input" type="text" inputmode="decimal" placeholder="最小" />
-          <span class="filter-dash">–</span>
-          <input id="flt-mcap-max" class="filter-input" type="text" inputmode="decimal" placeholder="最大" />
-        </div>
-      </label>
-
-      <label class="filter-row">
-        <span>持仓市值区间</span>
-        <div class="filter-range">
-          <input id="flt-hold-min" class="filter-input" type="text" inputmode="decimal" placeholder="最小" />
-          <span class="filter-dash">–</span>
-          <input id="flt-hold-max" class="filter-input" type="text" inputmode="decimal" placeholder="最大" />
-        </div>
-      </label>
-
-      <label class="filter-row">
-        <span>持仓人数区间</span>
-        <div class="filter-range">
-          <input id="flt-count-min" class="filter-input" type="text" inputmode="numeric" placeholder="最小" />
-          <span class="filter-dash">–</span>
-          <input id="flt-count-max" class="filter-input" type="text" inputmode="numeric" placeholder="最大" />
-        </div>
-      </label>
-
-      <div class="auth-actions">
-        <button id="btn-apply-filter" class="auth-btn" type="button">应用</button>
-        <button id="btn-reset-filter" class="auth-btn ghost" type="button">重置</button>
-      </div>
-      <div id="filter-summary" class="filter-summary"></div>
     </section>
 
     <div class="sidebar-foot">
@@ -154,6 +101,79 @@
   </main>
 
   <div id="row-tip" class="row-tip hidden" role="dialog" aria-live="polite"></div>
+
+  <div id="settings-overlay" class="settings-overlay hidden">
+    <div
+      class="settings-panel"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="settings-title"
+      id="settings-panel"
+    >
+      <div class="settings-head">
+        <div>
+          <h2 id="settings-title">设置</h2>
+          <p class="settings-sub">人数与代币筛选</p>
+        </div>
+        <button id="btn-close-settings" class="auth-btn ghost settings-close" type="button">关闭</button>
+      </div>
+      <div class="settings-body">
+        <section class="settings-section" id="board-settings-box">
+          <div class="auth-title">人数</div>
+          <p class="filter-help">榜单取前 N 名交易员（1–200）</p>
+          <label class="filter-row">
+            <span>总榜人数</span>
+            <input id="set-all-limit" class="filter-input" type="number" min="1" max="200" step="1" value="20" />
+          </label>
+          <label class="filter-row">
+            <span>7日榜人数</span>
+            <input id="set-day-limit" class="filter-input" type="number" min="1" max="200" step="1" value="50" />
+          </label>
+          <label class="filter-row">
+            <span>24小时人数</span>
+            <input id="set-h24-limit" class="filter-input" type="number" min="1" max="200" step="1" value="50" />
+          </label>
+          <div class="auth-actions">
+            <button id="btn-save-settings" class="auth-btn" type="button">保存人数</button>
+          </div>
+        </section>
+
+        <section class="settings-section" id="token-filter-box">
+          <div class="auth-title">代币筛选</div>
+          <p class="filter-help">作用于当前榜单结果；留空不限。市值支持 K/M，如 <code>500K</code>、<code>10M</code></p>
+          <label class="filter-row">
+            <span>市值区间</span>
+            <div class="filter-range">
+              <input id="flt-mcap-min" class="filter-input" type="text" inputmode="decimal" placeholder="最小" />
+              <span class="filter-dash">–</span>
+              <input id="flt-mcap-max" class="filter-input" type="text" inputmode="decimal" placeholder="最大" />
+            </div>
+          </label>
+          <label class="filter-row">
+            <span>持仓市值区间</span>
+            <div class="filter-range">
+              <input id="flt-hold-min" class="filter-input" type="text" inputmode="decimal" placeholder="最小" />
+              <span class="filter-dash">–</span>
+              <input id="flt-hold-max" class="filter-input" type="text" inputmode="decimal" placeholder="最大" />
+            </div>
+          </label>
+          <label class="filter-row">
+            <span>持仓人数区间</span>
+            <div class="filter-range">
+              <input id="flt-count-min" class="filter-input" type="text" inputmode="numeric" placeholder="最小" />
+              <span class="filter-dash">–</span>
+              <input id="flt-count-max" class="filter-input" type="text" inputmode="numeric" placeholder="最大" />
+            </div>
+          </label>
+          <div class="auth-actions">
+            <button id="btn-apply-filter" class="auth-btn" type="button">应用筛选</button>
+            <button id="btn-reset-filter" class="auth-btn ghost" type="button">重置</button>
+          </div>
+          <div id="filter-summary" class="filter-summary"></div>
+        </section>
+      </div>
+    </div>
+  </div>
 
   <script src="/static/app.js"></script>
 </body>

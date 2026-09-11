@@ -138,6 +138,11 @@ body {
   background: var(--accent);
 }
 
+.nav-btn.is-open {
+  border-color: #5a7a3a;
+  background: var(--accent-dim);
+}
+
 .nav-btn:disabled {
   opacity: 0.55;
   cursor: wait;
@@ -315,6 +320,81 @@ body {
 
 .job-status.running { color: var(--accent); border-color: #4a6230; }
 .job-status.error { color: var(--danger); border-color: #6a3428; }
+
+.settings-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: grid;
+  place-items: center;
+  padding: 28px 18px;
+  background:
+    radial-gradient(ellipse 70% 50% at 20% 0%, rgba(200, 245, 66, 0.08), transparent 55%),
+    rgba(6, 10, 8, 0.78);
+  backdrop-filter: blur(10px);
+}
+
+.settings-overlay.hidden { display: none; }
+
+.settings-panel {
+  width: min(760px, 100%);
+  max-height: min(88vh, 860px);
+  overflow: auto;
+  border: 1px solid #5a7a3a;
+  background: linear-gradient(180deg, #171f1a 0%, #101612 100%);
+  box-shadow: 0 28px 80px rgba(0, 0, 0, 0.55);
+  clip-path: polygon(0 0, 100% 0, 100% calc(100% - 22px), calc(100% - 22px) 100%, 0 100%);
+  animation: fadeUp 0.22s ease both;
+}
+
+.settings-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 20px 22px 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.settings-head h2 {
+  margin: 0;
+  font-family: var(--display);
+  font-size: 24px;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+}
+
+.settings-sub {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.settings-close {
+  flex: 0 0 auto;
+  width: auto;
+  padding: 8px 14px;
+}
+
+.settings-body {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  padding: 16px 22px 22px;
+}
+
+.settings-section {
+  border: 1px solid var(--line);
+  padding: 14px;
+  background: rgba(0, 0, 0, 0.22);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+body.settings-open { overflow: hidden; }
 
 .main {
   min-width: 0;
@@ -692,4 +772,6 @@ td.name-cell {
     border-bottom: 1px solid var(--line);
   }
   .table-scroll { max-height: 70vh; }
+  .settings-body { grid-template-columns: 1fr; }
+  .settings-panel { clip-path: none; }
 }

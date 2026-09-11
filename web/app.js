@@ -82,6 +82,10 @@ const setAllLimit = document.getElementById("set-all-limit");
 const setDayLimit = document.getElementById("set-day-limit");
 const setH24Limit = document.getElementById("set-h24-limit");
 const btnSaveSettings = document.getElementById("btn-save-settings");
+const btnOpenSettings = document.getElementById("btn-open-settings");
+const btnCloseSettings = document.getElementById("btn-close-settings");
+const settingsOverlay = document.getElementById("settings-overlay");
+const settingsHint = document.getElementById("settings-btn-hint");
 const hintAllFast = document.getElementById("hint-all-fast");
 const hint7dFast = document.getElementById("hint-7d-fast");
 const hint24hFast = document.getElementById("hint-24h-fast");
@@ -184,6 +188,36 @@ function applySettingsToUi(s) {
   if (hintAllFast) hintAllFast.textContent = `前${boardSettings.allLimit}`;
   if (hint7dFast) hint7dFast.textContent = `前${boardSettings.dayLimit}`;
   if (hint24hFast) hint24hFast.textContent = `前${boardSettings.h24Limit}`;
+  updateSettingsHint();
+}
+
+function isSettingsOpen() {
+  return !!(settingsOverlay && !settingsOverlay.classList.contains("hidden"));
+}
+
+function openSettings() {
+  if (!settingsOverlay) return;
+  hideRowTip();
+  settingsOverlay.classList.remove("hidden");
+  document.body.classList.add("settings-open");
+  btnOpenSettings?.classList.add("is-open");
+  const first = settingsOverlay.querySelector("input");
+  if (first) first.focus();
+}
+
+function closeSettings() {
+  if (!settingsOverlay) return;
+  settingsOverlay.classList.add("hidden");
+  document.body.classList.remove("settings-open");
+  btnOpenSettings?.classList.remove("is-open");
+}
+
+function updateSettingsHint() {
+  if (!settingsHint) return;
+  const filtered = hasAnyFilter(getActiveFilters());
+  settingsHint.textContent = filtered
+    ? `有筛选 · 榜 ${boardSettings.allLimit}/${boardSettings.dayLimit}/${boardSettings.h24Limit}`
+    : `榜 ${boardSettings.allLimit}/${boardSettings.dayLimit}/${boardSettings.h24Limit}`;
 }
 
 async function loadSettings() {
@@ -240,11 +274,14 @@ function filterRows(rows) {
 }
 
 function updateFilterSummary(shown, total, filtered) {
-  if (!filtered) {
-    filterSummary.textContent = total ? `未筛选 · ${total} 条` : "";
-    return;
+  if (filterSummary) {
+    if (!filtered) {
+      filterSummary.textContent = total ? `未筛选 · ${total} 条` : "";
+    } else {
+      filterSummary.textContent = `已筛选 · ${shown}/${total}`;
+    }
   }
-  filterSummary.textContent = `已筛选 · ${shown}/${total}`;
+  updateSettingsHint();
 }
 
 /** Parse numbers like 12.1M, 887K, 12.1M(2.44%), plain ints. */
@@ -653,7 +690,10 @@ function resetFilters() {
   writeFilterInputs({});
   saveStoredFilters({});
   if (lastPayload) renderTable(lastPayload);
-  else filterSummary.textContent = "";
+  else {
+    updateFilterSummary(0, 0, false);
+    updateSettingsHint();
+  }
 }
 
 async function refreshAuthStatus() {
@@ -938,6 +978,7 @@ async function startRefresh({ silent = false } = {}) {
 }
 
 async function selectBoard(board) {
+  closeSettings();
   activeBoard = normalizeBoard(board);
   activeMode = "fast";
   setActiveButton(activeBoard);
@@ -1009,13 +1050,18 @@ btnGoogleAuth?.addEventListener("click", () =>
 btnCancelGoogle?.addEventListener("click", () =>
   cancelGoogleLogin().catch((e) => setJobStatus(String(e), "error"))
 );
-btnSaveSettings.addEventListener("click", () =>
+btnSaveSettings?.addEventListener("click", () =>
   saveBoardSettings().catch((e) => setJobStatus(String(e), "error"))
 );
-btnApplyFilter.addEventListener("click", applyFilters);
-btnResetFilter.addEventListener("click", resetFilters);
+btnApplyFilter?.addEventListener("click", applyFilters);
+btnResetFilter?.addEventListener("click", resetFilters);
+btnOpenSettings?.addEventListener("click", openSettings);
+btnCloseSettings?.addEventListener("click", closeSettings);
+settingsOverlay?.addEventListener("click", (e) => {
+  if (e.target === settingsOverlay) closeSettings();
+});
 for (const f of FILTER_FIELDS) {
-  document.getElementById(f.id).addEventListener("keydown", (e) => {
+  document.getElementById(f.id)?.addEventListener("keydown", (e) => {
     if (e.key === "Enter") applyFilters();
   });
 }
@@ -1082,7 +1128,13 @@ document.addEventListener("click", (e) => {
 });
 
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") hideRowTip();
+  if (e.key === "Escape") {
+    if (isSettingsOpen()) {
+      closeSettings();
+      return;
+    }
+    hideRowTip();
+  }
 });
 
 loadStoredFilters();
