@@ -8,6 +8,7 @@ install -m 644 /opt/Fomo/deploy/fomo.service /etc/systemd/system/fomo.service
 install -m 644 /opt/Fomo/deploy/nginx-fomo.conf /etc/nginx/conf.d/fomo.conf
 systemctl daemon-reload
 systemctl enable --now fomo
+systemctl restart fomo
 nginx -t
 systemctl enable --now nginx
 systemctl reload nginx

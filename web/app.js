@@ -106,6 +106,8 @@ let pollTimer = null;
 let activeMode = "fast";
 let activeBoard = "all";
 let lastPayload = null;
+const boardPayloads = Object.create(null);
+let boardSelectGen = 0;
 let tipRowIndex = -1;
 let sortState = { col: null, dir: null }; // dir: 'asc' | 'desc'
 let refreshTargetBoard = null;
@@ -113,6 +115,39 @@ let refreshSilent = false;
 let refreshBusy = false;
 let googlePollTimer = null;
 let googleLoginBusy = false;
+
+function isAbortError(e) {
+  return !!(e && (e.name === "AbortError" || /aborted/i.test(String(e.message || e))));
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function fetchJson(url, { retries = 1, ...init } = {}) {
+  let lastErr = null;
+  for (let i = 0; i <= retries; i += 1) {
+    try {
+      const res = await fetch(url, init);
+      const data = await res.json().catch(() => ({}));
+      return { res, data };
+    } catch (e) {
+      if (isAbortError(e)) throw e;
+      lastErr = e;
+      if (i < retries) await sleep(250);
+    }
+  }
+  throw lastErr;
+}
+
+function networkErrorMessage(e) {
+  if (isAbortError(e)) return "";
+  const msg = e && e.message ? String(e.message) : String(e);
+  if (/failed to fetch|networkerror|load failed|network error/i.test(msg)) {
+    return "网络中断，请稍后重试";
+  }
+  return msg;
+}
 
 function setJobStatus(text, mode = "") {
   jobStatus.textContent = text;
@@ -278,13 +313,12 @@ async function saveBoardSettings() {
   );
 }
 
-function setActiveButton(board) {
-  activeBoard = normalizeBoard(board);
-  activeMode = "fast";
+function setActiveButton(board = activeBoard) {
+  const current = normalizeBoard(board);
   navButtons.forEach((btn) => {
     if (!btn) return;
     const b = btn.dataset.board || "all";
-    btn.classList.toggle("active", b === activeBoard);
+    btn.classList.toggle("active", b === current);
   });
 }
 
@@ -498,9 +532,13 @@ function normalizePayload(payload) {
 
 function renderTable(payload) {
   payload = normalizePayload(payload);
+  const board = normalizeBoard(payload.board || activeBoard || "all");
+  if (board !== activeBoard) return;
   lastPayload = payload;
+  if ((payload.rows || []).length) {
+    boardPayloads[board] = payload;
+  }
   const allRows = payload.rows || [];
-  const board = payload.board || activeBoard || "all";
   const label = payload.boardLabel || boardLabel(board);
   const filteredResult = filterRows(allRows);
   const rows = sortRows(filteredResult.rows);
@@ -514,8 +552,7 @@ function renderTable(payload) {
     `${label}：登录态用 balances 实时开仓；未登录才用 spotlight（可能滞后）。`;
   updatedAt.textContent = `更新 ${formatTime(payload.updatedAt)}`;
   tokenCount.textContent = filtered ? `${rows.length}/${total} tokens` : `${payload.tokenCount || rows.length} tokens`;
-  modeChip.textContent = normalizeBoard(board);
-  setActiveButton(board);
+  modeChip.textContent = board;
   updateFilterSummary(rows.length, total, filtered);
   renderSortChips();
 
@@ -858,10 +895,7 @@ function hideOauthGoogleLink() {
 }
 
 function isMobileBrowser() {
-  return (
-    window.matchMedia("(max-width: 860px)").matches ||
-    /Android|iPhone|iPad|iPod/i.test(navigator.userAgent || "")
-  );
+  return /Android|iPhone|iPad|iPod/i.test(navigator.userAgent || "");
 }
 
 function setGoogleLoginBusy(busy) {
@@ -888,44 +922,118 @@ async function startGoogleLogin() {
   setGoogleLoginBusy(true);
   authStatus.textContent = "正在准备 Google 授权…";
   authStatus.className = "auth-status pending";
-  const mobile = isMobileBrowser();
-  let popup = null;
-  if (!mobile) {
-    try {
-      popup = window.open("about:blank", "fomo-google-oauth");
-    } catch {
-      popup = null;
-    }
+  if (isMobileBrowser()) {
+    await startMobileGoogleOAuth();
+    return;
   }
+  await startDesktopGoogleLogin();
+}
+
+async function startDesktopGoogleLogin() {
   try {
-    const res = await fetch("/api/auth/google/start", { method: "POST" });
+    const res = await fetch("/api/auth/google/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mobile: false }),
+    });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.detail || data.message || "无法启动 Google 登录");
-    const url = data.url;
-    if (!url) throw new Error("未返回授权地址");
-    if (popup && !popup.closed) {
-      popup.location.href = url;
-    } else if (popup) {
-      popup.close();
+    if (data.url) {
+      await showBrowserOauth(data, { mobile: false });
+      return;
     }
-    if (oauthGoogleLink) {
-      oauthGoogleLink.href = url;
-      oauthGoogleLink.classList.remove("hidden");
-      oauthGoogleLink.textContent = mobile
-        ? "打开 Google 授权（请留在浏览器）"
-        : "打开 Google 授权";
-    }
-    authStatus.textContent =
-      data.progress ||
-      "请用 Google 登录。完成后留在浏览器，复制地址栏完整链接贴回保存；不要打开 FOMO App";
+    authStatus.textContent = data.progress || "正在打开 Chrome…";
     authStatus.className = "auth-status pending";
-    setGoogleLoginBusy(false);
-    if (authToken) {
-      authToken.placeholder = "粘贴浏览器地址栏完整链接（含 privy_oauth_code）";
-      if (!mobile) authToken.focus();
-    }
+    pollGoogleLogin();
   } catch (e) {
-    if (popup && !popup.closed) popup.close();
+    setGoogleLoginBusy(false);
+    authStatus.textContent = e.message || String(e);
+    authStatus.className = "auth-status bad";
+  }
+}
+
+async function showBrowserOauth(data, { mobile }) {
+  const url = data.url;
+  if (!url) throw new Error("未返回授权地址");
+  if (!mobile) {
+    try {
+      window.open(url, "fomo-google-oauth-" + Date.now(), "popup=yes,width=520,height=740");
+    } catch {
+      /* ignore */
+    }
+  }
+  if (oauthGoogleLink) {
+    oauthGoogleLink.href = url;
+    oauthGoogleLink.classList.remove("hidden");
+    oauthGoogleLink.textContent = mobile
+      ? "打开 Google 授权（请留在浏览器）"
+      : "打开 Google 授权";
+  }
+  authStatus.textContent =
+    data.progress ||
+    "请用 Google 登录。完成后留在浏览器，复制地址栏完整链接贴回保存；不要打开 FOMO App";
+  authStatus.className = "auth-status pending";
+  setGoogleLoginBusy(false);
+  if (authToken) {
+    authToken.placeholder = "粘贴浏览器地址栏完整链接（含 privy_oauth_code）";
+  }
+}
+
+async function pollGoogleLogin() {
+  try {
+    const res = await fetch("/api/auth/google/status");
+    const data = await res.json().catch(() => ({}));
+    if (data.status === "running") {
+      setGoogleLoginBusy(true);
+      authStatus.textContent = data.progress || "请在弹出的 Chrome 里完成 Google 登录…";
+      authStatus.className = "auth-status pending";
+      googlePollTimer = setTimeout(pollGoogleLogin, 1000);
+      return;
+    }
+    setGoogleLoginBusy(false);
+    stopGooglePoll();
+    if (data.status === "done") {
+      if (authToken) authToken.value = "";
+      await refreshAuthStatus();
+      if (data.testOk === false) {
+        authStatus.textContent = `已保存，但校验失败：${data.testError || "unknown"}`;
+        authStatus.className = "auth-status bad";
+      } else if (data.tokenPreview) {
+        authStatus.textContent = `已保存并校验通过 · ${data.tokenPreview}${
+          data.hasRefresh ? " · 可自动续期" : ""
+        }`;
+        authStatus.className = "auth-status ok";
+      } else {
+        authStatus.textContent = "已保存 Token";
+        authStatus.className = "auth-status ok";
+      }
+      return;
+    }
+    if (data.status === "error") {
+      authStatus.textContent = data.error || "登录失败";
+      authStatus.className = "auth-status bad";
+      return;
+    }
+    await refreshAuthStatus();
+  } catch (e) {
+    setGoogleLoginBusy(false);
+    stopGooglePoll();
+    authStatus.textContent = e.message || String(e);
+    authStatus.className = "auth-status bad";
+  }
+}
+
+async function startMobileGoogleOAuth() {
+  try {
+    const res = await fetch("/api/auth/google/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mobile: true }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || data.message || "无法启动 Google 登录");
+    await showBrowserOauth(data, { mobile: true });
+  } catch (e) {
     hideOauthGoogleLink();
     setGoogleLoginBusy(false);
     authStatus.textContent = e.message || String(e);
@@ -936,88 +1044,102 @@ async function startGoogleLogin() {
 async function cancelGoogleLogin() {
   stopGooglePoll();
   hideOauthGoogleLink();
+  try {
+    await fetch("/api/auth/google/cancel", { method: "POST" });
+  } catch {
+    /* ignore */
+  }
   setGoogleLoginBusy(false);
   await refreshAuthStatus();
 }
 
-async function loadCached(board = activeBoard) {
+async function loadCached(board = activeBoard, { render = true } = {}) {
+  const target = normalizeBoard(board);
   try {
-    const res = await fetch(`/api/fomo-top20/cached?board=${encodeURIComponent(board)}`);
-    const data = await res.json();
+    const { data } = await fetchJson(
+      `/api/fomo-top20/cached?board=${encodeURIComponent(target)}`
+    );
     if (data.ok && data.rows && data.rows.length) {
-      renderTable(data);
-      setJobStatus(`缓存 · ${formatTime(data.updatedAt)}`);
+      boardPayloads[target] = data;
+      if (render && target === activeBoard) {
+        renderTable(data);
+        setJobStatus(`缓存 · ${formatTime(data.generatedAt || data.updatedAt)}`);
+      }
       return data;
     }
     return null;
   } catch (e) {
-    setJobStatus("缓存读取失败", "error");
-    return null;
+    if (isAbortError(e)) return { aborted: true };
+    return { error: networkErrorMessage(e) || "缓存读取失败" };
   }
 }
 
 async function pollUntilDone() {
-  const res = await fetch("/api/fomo-top20/status");
-  const st = await res.json();
-  const jobBoard = normalizeBoard(st.board || refreshTargetBoard || activeBoard);
-  const progress = st.progress || st.status || "";
-  setJobStatus(progress, st.status === "error" ? "error" : "running");
+  try {
+    const res = await fetch("/api/fomo-top20/status");
+    const st = await res.json();
+    const jobBoard = normalizeBoard(st.board || refreshTargetBoard || activeBoard);
+    const progress = st.progress || st.status || "";
+    setJobStatus(progress, st.status === "error" ? "error" : "running");
 
-  if (st.status === "running") {
-    setRefreshBusy(true);
-    if (jobBoard === activeBoard) {
-      setFetchStatus(progress, "running");
-    } else {
-      setFetchStatus(
-        `${boardLabel(jobBoard)} 更新中（当前看${boardLabel(activeBoard)}）…`,
-        "running"
-      );
-    }
-    pollTimer = setTimeout(pollUntilDone, 900);
-    return;
-  }
-
-  setRefreshBusy(false);
-
-  if (st.status === "error") {
-    const err = st.error || "失败";
-    setJobStatus(err, "error");
-    if (jobBoard === activeBoard) {
-      setFetchStatus(err, "error");
-    } else {
-      setFetchStatus(`${boardLabel(jobBoard)} 失败：${err}`, "error");
-    }
-    setActiveButton(activeBoard);
-    return;
-  }
-
-  // 仅当当前仍停留在该榜单时刷新表格
-  if (jobBoard !== activeBoard) {
-    setJobStatus(`完成 · ${boardLabel(jobBoard)}（后台）`);
-    setFetchStatus("");
-    return;
-  }
-
-  const resultRes = await fetch(`/api/fomo-top20/result?board=${encodeURIComponent(jobBoard)}`);
-  if (!resultRes.ok) {
-    const err = await resultRes.json().catch(() => ({}));
-    const msg = err.detail || "获取结果失败";
-    setJobStatus(msg, "error");
-    setFetchStatus(msg, "error");
-    return;
-  }
-  const payload = await resultRes.json();
-  renderTable(payload);
-  const fail = payload.stats?.tradersFail ? ` · fail ${payload.stats.tradersFail}` : "";
-  const doneMsg = `完成 · ${payload.elapsedSec ?? "?"}s${fail}`;
-  setJobStatus(doneMsg);
-  setFetchStatus(refreshSilent ? `后台已更新 · ${formatTime(payload.updatedAt)}` : doneMsg);
-  if (refreshSilent) {
-    setTimeout(() => {
-      if (fetchStatusEl && fetchStatusEl.textContent.includes("后台已更新")) {
-        setFetchStatus("");
+    if (st.status === "running") {
+      setRefreshBusy(true);
+      if (jobBoard === activeBoard) {
+        setFetchStatus(progress, "running");
+      } else {
+        setFetchStatus(
+          `${boardLabel(jobBoard)} 更新中（当前看${boardLabel(activeBoard)}）…`,
+          "running"
+        );
       }
-    }, 4000);
+      pollTimer = setTimeout(pollUntilDone, 900);
+      return;
+    }
+
+    setRefreshBusy(false);
+
+    if (st.status === "error") {
+      const err = st.error || "失败";
+      setJobStatus(err, "error");
+      if (jobBoard === activeBoard) {
+        setFetchStatus(err, "error");
+      } else {
+        setFetchStatus(`${boardLabel(jobBoard)} 失败：${err}`, "error");
+      }
+      setActiveButton(activeBoard);
+      return;
+    }
+
+    if (jobBoard !== activeBoard) {
+      setJobStatus(`完成 · ${boardLabel(jobBoard)}（后台）`);
+      setFetchStatus("");
+      return;
+    }
+
+    const resultRes = await fetch(`/api/fomo-top20/result?board=${encodeURIComponent(jobBoard)}`);
+    if (!resultRes.ok) {
+      const err = await resultRes.json().catch(() => ({}));
+      const msg = err.detail || "获取结果失败";
+      setJobStatus(msg, "error");
+      setFetchStatus(msg, "error");
+      return;
+    }
+    const payload = await resultRes.json();
+    renderTable(payload);
+    const fail = payload.stats?.tradersFail ? ` · fail ${payload.stats.tradersFail}` : "";
+    const doneMsg = `完成 · ${payload.elapsedSec ?? "?"}s${fail}`;
+    setJobStatus(doneMsg);
+    setFetchStatus(refreshSilent ? `后台已更新 · ${formatTime(payload.updatedAt)}` : doneMsg);
+    if (refreshSilent) {
+      setTimeout(() => {
+        if (fetchStatusEl && fetchStatusEl.textContent.includes("后台已更新")) {
+          setFetchStatus("");
+        }
+      }, 4000);
+    }
+  } catch (e) {
+    if (isAbortError(e)) return;
+    pollTimer = setTimeout(pollUntilDone, 1500);
   }
 }
 
@@ -1026,7 +1148,7 @@ function ensurePolling() {
   pollUntilDone();
 }
 
-async function startRefresh({ silent = false } = {}) {
+async function startRefresh({ silent = false, force = false, gen = boardSelectGen } = {}) {
   const board = activeBoard;
   const limit = boardLimit(board);
   const label = boardLabel(board);
@@ -1039,19 +1161,29 @@ async function startRefresh({ silent = false } = {}) {
   showLoading(false);
 
   try {
-    const res = await fetch("/api/fomo-top20/refresh", {
+    const { res, data } = await fetchJson("/api/fomo-top20/refresh", {
+      retries: 1,
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ mode: "fast", board, limit }),
+      body: JSON.stringify({ mode: "fast", board, limit, force: !!force }),
     });
-    const data = await res.json().catch(() => ({}));
+    if (gen !== boardSelectGen) return;
     if (!res.ok) throw new Error(data.detail || data.message || "无法启动刷新");
     if (!data.ok) throw new Error(data.message || "无法启动刷新");
+
+    if (data.skipped) {
+      setRefreshBusy(false);
+      if (board === activeBoard && data.rows && data.rows.length) {
+        renderTable(data);
+      }
+      setFetchStatus("");
+      setJobStatus(`缓存 · ${formatTime(data.generatedAt || data.updatedAt)}`);
+      return;
+    }
 
     if (data.started === false) {
       const runningBoard = normalizeBoard(data.board || "");
       if (runningBoard && runningBoard !== board) {
-        // 其他榜单任务进行中：保持禁用刷新，继续轮询，勿清掉已有轮询
         refreshTargetBoard = runningBoard;
         const msg = `${boardLabel(runningBoard)} 更新中，请稍后再刷新当前榜`;
         setJobStatus(msg, "running");
@@ -1060,7 +1192,6 @@ async function startRefresh({ silent = false } = {}) {
         ensurePolling();
         return;
       }
-      // 同榜单任务已在跑
       refreshTargetBoard = board;
       setFetchStatus(`${label} 更新中…`, "running");
       ensurePolling();
@@ -1068,15 +1199,15 @@ async function startRefresh({ silent = false } = {}) {
     }
 
     refreshTargetBoard = board;
-    // 新任务：若已有轮询则复用，否则启动
     if (pollTimer) {
       clearTimeout(pollTimer);
       pollTimer = null;
     }
     pollUntilDone();
   } catch (e) {
+    if (isAbortError(e) || gen !== boardSelectGen) return;
     setRefreshBusy(false);
-    const msg = e.message || String(e);
+    const msg = networkErrorMessage(e) || "无法启动刷新";
     setJobStatus(msg, "error");
     setFetchStatus(msg, "error");
   }
@@ -1085,30 +1216,64 @@ async function startRefresh({ silent = false } = {}) {
 async function selectBoard(board) {
   closeSettings();
   closeSidebar();
-  activeBoard = normalizeBoard(board);
+  const target = normalizeBoard(board);
+  activeBoard = target;
   activeMode = "fast";
   setActiveButton(activeBoard);
   hideRowTip();
 
-  const cached = await loadCached(activeBoard);
+  const gen = ++boardSelectGen;
+
+  if (boardPayloads[target]) {
+    renderTable(boardPayloads[target]);
+  } else {
+    panelTitle.textContent = boardLabel(target);
+    if (modeChip) modeChip.textContent = target;
+  }
+
+  const cached = await loadCached(target, { render: true });
+  if (gen !== boardSelectGen) return;
+  if (cached?.aborted) return;
+  if (cached?.error) {
+    if (boardPayloads[target]) {
+      setJobStatus(
+        `缓存 · ${formatTime(boardPayloads[target].generatedAt || boardPayloads[target].updatedAt)}`
+      );
+      setFetchStatus("");
+      return;
+    }
+    setFetchStatus(cached.error, "error");
+    setJobStatus(cached.error, "error");
+    if (activeBoard === target) {
+      renderTable({
+        board: target,
+        boardLabel: boardLabel(target),
+        rows: [],
+        columns: COLUMNS,
+        tokenCount: 0,
+        note: cached.error,
+      });
+    }
+    return;
+  }
   if (!cached) {
     setFetchStatus(`${boardLabel(activeBoard)} 无缓存，正在拉取…`, "running");
-    await startRefresh({ silent: false });
+    await startRefresh({ silent: false, force: false, gen });
     return;
   }
 
-  if (isCacheStale(cached.updatedAt)) {
-    const ageMin = Math.round(cacheAgeMs(cached.updatedAt) / 60000);
+  const stamp = cached.generatedAt || cached.updatedAt;
+  if (isCacheStale(stamp)) {
+    const ageMin = Math.round(cacheAgeMs(stamp) / 60000);
     setFetchStatus(`缓存约 ${ageMin} 分钟前，后台更新中…`, "running");
-    setJobStatus(`缓存 · ${formatTime(cached.updatedAt)} · 后台更新`, "running");
-    await startRefresh({ silent: true });
+    setJobStatus(`缓存 · ${formatTime(stamp)} · 后台更新`, "running");
+    await startRefresh({ silent: true, force: false, gen });
     return;
   }
 
-  // 有新鲜缓存：若别处仍在拉榜，刷新按钮保持禁用并继续轮询
   try {
-    const stRes = await fetch("/api/fomo-top20/status");
-    const st = await stRes.json();
+    const { data: st } = await fetchJson("/api/fomo-top20/status", { retries: 0 });
+    if (gen !== boardSelectGen) return;
     if (st.status === "running") {
       const runningBoard = normalizeBoard(st.board || "");
       refreshTargetBoard = runningBoard || refreshTargetBoard;
@@ -1120,37 +1285,47 @@ async function selectBoard(board) {
       ensurePolling();
       return;
     }
-  } catch {
-    /* ignore */
+  } catch (e) {
+    if (isAbortError(e) || gen !== boardSelectGen) return;
   }
 
   setRefreshBusy(false);
   setFetchStatus("");
-  setJobStatus(`缓存 · ${formatTime(cached.updatedAt)}`);
+  setJobStatus(`缓存 · ${formatTime(stamp)}`);
 }
 
 async function forceRefreshBoard() {
   if (refreshBusy) return;
   activeMode = "fast";
   setActiveButton(activeBoard);
-  await startRefresh({ silent: false });
+  await startRefresh({ silent: false, force: true });
 }
 
-btnFast?.addEventListener("click", () => selectBoard("all"));
-btn7d?.addEventListener("click", () => selectBoard("7d"));
-btn24h?.addEventListener("click", () => selectBoard("24h"));
+function onSelectBoardError(e) {
+  const msg = networkErrorMessage(e) || String(e);
+  if (!msg) return;
+  setJobStatus(msg, "error");
+  setFetchStatus(msg, "error");
+}
+
+btnFast?.addEventListener("click", () => selectBoard("all").catch(onSelectBoardError));
+btn7d?.addEventListener("click", () => selectBoard("7d").catch(onSelectBoardError));
+btn24h?.addEventListener("click", () => selectBoard("24h").catch(onSelectBoardError));
 btnRefreshBoard?.addEventListener("click", () =>
   forceRefreshBoard().catch((e) => {
-    setJobStatus(String(e), "error");
-    setFetchStatus(String(e), "error");
+    const msg = networkErrorMessage(e) || String(e);
+    setJobStatus(msg, "error");
+    setFetchStatus(msg, "error");
   })
 );
 btnMobileRefresh?.addEventListener("click", () =>
   forceRefreshBoard().catch((e) => {
-    setJobStatus(String(e), "error");
-    setFetchStatus(String(e), "error");
+    const msg = networkErrorMessage(e) || String(e);
+    setJobStatus(msg, "error");
+    setFetchStatus(msg, "error");
   })
 );
+
 btnToggleSidebar?.addEventListener("click", toggleSidebar);
 btnCloseSidebar?.addEventListener("click", closeSidebar);
 sidebarBackdrop?.addEventListener("click", closeSidebar);

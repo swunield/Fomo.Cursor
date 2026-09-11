@@ -7,7 +7,7 @@ import time
 import urllib.error
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -794,21 +794,58 @@ def persist_outputs(
         meta["persistWarnings"] = errors
 
 
+CACHE_FRESH_SEC = 10 * 60
+
+
+def is_cache_fresh(cached: dict | None, *, now: datetime | None = None, max_age_sec: int = CACHE_FRESH_SEC) -> bool:
+    """True when this board was pulled recently enough to skip another fetch."""
+    if not cached:
+        return False
+    rows = cached.get("rows") or cached.get("tokens") or []
+    if not rows:
+        return False
+    raw = cached.get("generatedAt") or cached.get("updatedAt") or cached.get("marketCapUpdatedAt") or ""
+    if not raw:
+        return False
+    try:
+        ts = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    return (current - ts) <= timedelta(seconds=max_age_sec)
+
+
+_CACHE_MEM: dict[str, tuple[float, dict]] = {}
+
+
 def load_cached_result(board: str = "all") -> dict | None:
     cfg = resolve_board(board)
     path = cfg["lastResult"] if cfg["lastResult"].exists() else cfg["jsonPath"]
     if not path.exists():
         return None
     try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return None
+    key = str(path)
+    hit = _CACHE_MEM.get(key)
+    if hit and hit[0] == mtime:
+        return hit[1]
+    try:
         from update_token_marketcap import CSV_COLUMNS, rename_legacy_row
 
         data = json.loads(path.read_text(encoding="utf-8"))
-        for key in ("rows", "tokens"):
-            if key in data and isinstance(data[key], list):
-                data[key] = [rename_legacy_row(r) for r in data[key]]
+        for field in ("rows", "tokens"):
+            if field in data and isinstance(data[field], list):
+                data[field] = [rename_legacy_row(r) for r in data[field]]
         data["columns"] = list(CSV_COLUMNS)
         data.setdefault("board", cfg["boardKey"])
         data.setdefault("boardLabel", cfg["label"])
+        _CACHE_MEM[key] = (mtime, data)
         return data
     except Exception:
         return None

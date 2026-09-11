@@ -2,9 +2,13 @@
 """Open a real Chrome window so the user can Google-login on fomo.family, then capture Privy tokens."""
 from __future__ import annotations
 
+import os
 import re
+import shutil
+import sys
 import threading
 import time
+from pathlib import Path
 from typing import Any, Callable
 
 from fomo_auth import AUTH_PATH, extract_privy_session, save_auth, test_auth
@@ -135,7 +139,53 @@ def request_cancel() -> dict:
     return login_status()
 
 
+NO_BROWSER_MSG = "未找到可用浏览器。请安装 Google Chrome，或运行: python -m playwright install chromium"
+
+
+def playwright_unavailable_reason() -> str | None:
+    """Why headed Playwright login cannot run on this machine, or None if it can."""
+    if sys.platform.startswith("linux") and not os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY"):
+        return NO_BROWSER_MSG
+    if _system_chrome_exists():
+        return None
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        return "缺少 playwright。请运行: pip install playwright && python -m playwright install chrome"
+    try:
+        with sync_playwright() as p:
+            exe = getattr(p.chromium, "executable_path", "") or ""
+            if exe and Path(exe).is_file():
+                return None
+    except Exception:
+        pass
+    return NO_BROWSER_MSG
+
+
+def _system_chrome_exists() -> bool:
+    if sys.platform == "win32":
+        roots = [
+            os.environ.get("PROGRAMFILES", r"C:\Program Files"),
+            os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)"),
+            os.environ.get("LOCALAPPDATA", ""),
+        ]
+        for root in roots:
+            if not root:
+                continue
+            candidate = Path(root) / "Google" / "Chrome" / "Application" / "chrome.exe"
+            if candidate.is_file():
+                return True
+        return False
+    for name in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser"):
+        if shutil.which(name):
+            return True
+    return False
+
+
 def start_google_login() -> dict:
+    reason = playwright_unavailable_reason()
+    if reason:
+        raise RuntimeError(reason)
     with _lock:
         if _job["status"] == "running":
             return {
@@ -304,9 +354,7 @@ def _launch_context(p):
         except Exception as exc:
             hint = str(exc)
             if "Executable doesn't exist" in hint or "chromium" in hint.lower():
-                raise RuntimeError(
-                    "未找到可用浏览器。请安装 Google Chrome，或运行: python -m playwright install chromium"
-                ) from exc
+                raise RuntimeError(NO_BROWSER_MSG) from exc
             if "ProcessSingleton" in hint or "already running" in hint.lower() or "lock" in hint.lower():
                 raise RuntimeError("登录浏览器配置目录被占用，请先关掉上次弹出的 Chrome 窗口后再试。") from exc
             raise RuntimeError(f"无法启动 Chrome：{exc}") from exc

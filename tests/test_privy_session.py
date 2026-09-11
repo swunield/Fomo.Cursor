@@ -154,5 +154,90 @@ class PrivyCallbackParseTests(unittest.TestCase):
         )
 
 
+class GoogleStartRouteTests(unittest.TestCase):
+    def test_desktop_start_uses_playwright(self):
+        from unittest.mock import patch
+
+        from fastapi.testclient import TestClient
+
+        from app import app
+
+        with patch(
+            "app.start_google_login",
+            return_value={"ok": True, "started": True, "status": "running", "progress": "正在打开 Chrome…"},
+        ) as playwright, patch("app.start_browser_google_oauth") as browser:
+            res = TestClient(app).post("/api/auth/google/start", json={"mobile": False})
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.json()["mode"], "playwright")
+        self.assertFalse(res.json().get("url"))
+        playwright.assert_called_once()
+        browser.assert_not_called()
+
+    def test_desktop_start_falls_back_when_no_browser(self):
+        from unittest.mock import patch
+
+        from fastapi.testclient import TestClient
+
+        from app import app
+
+        with patch(
+            "app.start_google_login",
+            side_effect=RuntimeError("未找到可用浏览器。请安装 Google Chrome，或运行: python -m playwright install chromium"),
+        ) as playwright, patch(
+            "app.start_browser_google_oauth",
+            return_value={
+                "ok": True,
+                "mode": "browser",
+                "url": "https://accounts.google.com/o/oauth2/auth?x=1",
+                "progress": "请用 Google 登录",
+            },
+        ) as browser:
+            res = TestClient(app).post("/api/auth/google/start", json={"mobile": False})
+        self.assertEqual(res.status_code, 200)
+        body = res.json()
+        self.assertTrue(body.get("url"))
+        self.assertEqual(body.get("fallback"), "browser")
+        playwright.assert_called_once()
+        browser.assert_called_once()
+
+    def test_mobile_start_uses_browser_oauth_url(self):
+        from unittest.mock import patch
+
+        from fastapi.testclient import TestClient
+
+        from app import app
+
+        with patch("app.start_google_login") as playwright, patch(
+            "app.start_browser_google_oauth",
+            return_value={
+                "ok": True,
+                "mode": "browser",
+                "url": "https://accounts.google.com/o/oauth2/auth?x=1",
+            },
+        ) as browser:
+            res = TestClient(app).post("/api/auth/google/start", json={"mobile": True})
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(res.json().get("url"))
+        browser.assert_called_once()
+        playwright.assert_not_called()
+
+
+class PlaywrightAvailabilityTests(unittest.TestCase):
+    def test_linux_without_display_is_unavailable(self):
+        from unittest.mock import patch
+
+        from fomo_google_login import NO_BROWSER_MSG, playwright_unavailable_reason
+
+        with patch("fomo_google_login.sys.platform", "linux"), patch.dict(
+            "os.environ", {"DISPLAY": "", "WAYLAND_DISPLAY": ""}, clear=False
+        ):
+            # Ensure empty, not missing: pop if set
+            import os
+
+            os.environ.pop("DISPLAY", None)
+            os.environ.pop("WAYLAND_DISPLAY", None)
+            self.assertEqual(playwright_unavailable_reason(), NO_BROWSER_MSG)
+
+
 if __name__ == "__main__":
     unittest.main()

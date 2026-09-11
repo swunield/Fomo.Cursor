@@ -12,8 +12,10 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from fomo_auth import auth_status, clear_auth, save_auth, test_auth
+from fomo_google_login import login_status, request_cancel, start_google_login
 from fomo_oauth import complete_browser_google_oauth, parse_privy_callback, start_browser_google_oauth
 from fomo_pipeline import (
+    is_cache_fresh,
     load_cached_result,
     load_settings,
     resolve_board,
@@ -41,6 +43,10 @@ class AuthPayload(BaseModel):
     accessToken: str = Field(default="", description="Privy Bearer access token")
 
 
+class GoogleStartPayload(BaseModel):
+    mobile: bool = Field(default=False, description="Phone uses robots.txt OAuth")
+
+
 class GoogleCompletePayload(BaseModel):
     callback: str = Field(default="", description="fomo.family callback URL or query")
 
@@ -49,6 +55,7 @@ class RefreshPayload(BaseModel):
     mode: str = Field(default="fast", description="fast | full")
     board: str = Field(default="all", description="all | 7d | 24h")
     limit: int | None = Field(default=None, description="override top-N for this run")
+    force: bool = Field(default=False, description="ignore 10-minute cache freshness")
 
 
 class SettingsPayload(BaseModel):
@@ -92,8 +99,9 @@ def _payload_from_cached(cached: dict, source: str = "cache") -> dict:
     return {
         "ok": True,
         "source": source,
-        "updatedAt": cached.get("marketCapUpdatedAt") or cached.get("generatedAt"),
-        "traders": cached.get("traders") or [],
+        "updatedAt": cached.get("generatedAt") or cached.get("marketCapUpdatedAt"),
+        "generatedAt": cached.get("generatedAt") or cached.get("marketCapUpdatedAt"),
+        "traders": [],
         "tokenCount": cached.get("tokenCount") or len(rows),
         "columns": cached.get("columns") or (list(rows[0].keys()) if rows else []),
         "rows": rows,
@@ -136,11 +144,32 @@ def api_auth_clear():
 
 
 @app.post("/api/auth/google/start")
-def api_auth_google_start():
+def api_auth_google_start(payload: GoogleStartPayload | None = None):
+    mobile = bool(payload.mobile) if payload else False
     try:
-        return start_browser_google_oauth()
+        if mobile:
+            return start_browser_google_oauth()
+        try:
+            result = start_google_login()
+            return {**result, "mode": "playwright"}
+        except Exception as playwright_exc:
+            msg = str(playwright_exc)
+            if "未找到可用浏览器" in msg or "缺少 playwright" in msg:
+                result = start_browser_google_oauth()
+                return {**result, "fallback": "browser"}
+            raise
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/auth/google/status")
+def api_auth_google_status():
+    return login_status()
+
+
+@app.post("/api/auth/google/cancel")
+def api_auth_google_cancel():
+    return request_cancel()
 
 
 @app.post("/api/auth/google/complete")
@@ -213,8 +242,23 @@ def fomo_refresh(payload: RefreshPayload | None = None):
     mode = "full" if mode == "full" else "fast"
     board = _normalize_board(payload.board if payload else "all")
     limit = payload.limit if payload else None
+    force = bool(payload.force) if payload else False
     if mode == "full" and not auth_status().get("configured"):
         raise HTTPException(status_code=400, detail="全量模式需先配置 Privy Access Token")
+    if not force:
+        cached = load_cached_result(board=board)
+        if is_cache_fresh(cached):
+            body = _payload_from_cached(cached)
+            body.update(
+                {
+                    "ok": True,
+                    "started": False,
+                    "skipped": True,
+                    "reason": "fresh",
+                    "board": board,
+                }
+            )
+            return body
     with _lock:
         if _job["status"] == "running":
             return {
@@ -273,4 +317,4 @@ app.mount("/static", StaticFiles(directory=str(WEB)), name="static")
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run("app:app", host="127.0.0.1", port=8787, reload=False)
+    uvicorn.run("app:app", host="127.0.0.1", port=8787, reload=False, timeout_keep_alive=75)
