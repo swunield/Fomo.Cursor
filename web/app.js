@@ -97,6 +97,7 @@ const btnMobileRefresh = document.getElementById("btn-mobile-refresh");
 const btnToggleSidebar = document.getElementById("btn-toggle-sidebar");
 const sidebarEl = document.getElementById("sidebar");
 const sidebarBackdrop = document.getElementById("sidebar-backdrop");
+const mobileSort = document.getElementById("mobile-sort");
 const fetchStatusEl = document.getElementById("fetch-status");
 
 const CACHE_STALE_MS = 10 * 60 * 1000;
@@ -451,6 +452,28 @@ function onHeaderClick(col) {
     sortState = { col, dir: "desc" };
   }
   if (lastPayload) renderTable(lastPayload);
+  else renderSortChips();
+}
+
+function clearSort() {
+  sortState = { col: null, dir: null };
+  if (lastPayload) renderTable(lastPayload);
+  else renderSortChips();
+}
+
+function renderSortChips() {
+  if (!mobileSort) return;
+  const chips = [
+    `<button type="button" class="sort-chip${sortState.col ? "" : " active"}" data-sort="default">默认</button>`,
+  ];
+  for (const col of COLUMNS) {
+    const active = sortState.col === col && sortState.dir;
+    const dir = active ? (sortState.dir === "asc" ? "↑" : "↓") : "";
+    chips.push(
+      `<button type="button" class="sort-chip${active ? " active" : ""}" data-col="${escapeHtml(col)}">${escapeHtml(col)}${dir ? `<span class="sort-chip-dir">${dir}</span>` : ""}</button>`
+    );
+  }
+  mobileSort.innerHTML = chips.join("");
 }
 
 function renameLegacyRow(row) {
@@ -494,6 +517,7 @@ function renderTable(payload) {
   modeChip.textContent = normalizeBoard(board);
   setActiveButton(board);
   updateFilterSummary(rows.length, total, filtered);
+  renderSortChips();
 
   if (!rows.length) {
     emptyState.classList.remove("hidden");
@@ -1133,6 +1157,16 @@ btnApplyFilter?.addEventListener("click", applyFilters);
 btnResetFilter?.addEventListener("click", resetFilters);
 btnOpenSettings?.addEventListener("click", openSettings);
 btnCloseSettings?.addEventListener("click", closeSettings);
+mobileSort?.addEventListener("click", (e) => {
+  const chip = e.target.closest(".sort-chip");
+  if (!chip) return;
+  if (chip.dataset.sort === "default") {
+    clearSort();
+    return;
+  }
+  const col = chip.getAttribute("data-col");
+  if (col) onHeaderClick(col);
+});
 settingsOverlay?.addEventListener("click", (e) => {
   if (e.target === settingsOverlay) closeSettings();
 });
@@ -1260,6 +1294,7 @@ document.addEventListener("keydown", (e) => {
 });
 
 loadStoredFilters();
+renderSortChips();
 loadSettings().then(() => {
   refreshAuthStatus();
   selectBoard(activeBoard);
