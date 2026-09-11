@@ -598,7 +598,7 @@ function renderTable(payload) {
   panelTitle.textContent = label;
   panelNote.textContent =
     payload.note ||
-    `${label}：登录态用 balances 实时开仓；未登录才用 spotlight（可能滞后）。`;
+    `${label}：榜单与持仓均来自 FOMO API（需登录）。`;
   updatedAt.textContent = `更新 ${formatTime(payload.updatedAt)}`;
   tokenCount.textContent = filtered ? `${rows.length}/${total} tokens` : `${payload.tokenCount || rows.length} tokens`;
   modeChip.textContent = board;

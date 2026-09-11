@@ -3,7 +3,7 @@ name: fomo-top20-holdings-summary
 description: >-
   汇总 FOMO 总榜（All-time PnL）前20交易员持仓，按代币聚合导出 CSV/JSON/Markdown，
   并更新代币当前/最高市值。在用户提到 FOMO 总榜前20、持仓汇总、fomo.family、
-  985monitor、update_token_marketcap，或说「Fomo总榜前20数据汇总」时使用。
+  update_token_marketcap，或说「Fomo总榜前20数据汇总」时使用。
 ---
 
 # Fomo总榜前20数据汇总
@@ -18,33 +18,27 @@ description: >-
 
 市值刷新：`update_token_marketcap.py` / `update_token_marketcap.bat`
 
+**数据只走官方 FOMO API**（需登录 Token）。不要用第三方榜单或画像接口。
+
 ## 工作流
 
 ### 1. 拉取总榜前 20
 
-优先公开源（官方 `prod-api.fomo.family` 需 Privy 登录，通常不可用）：
+用已保存的 Privy Token 请求官方榜单：
 
-- `https://985monitor.xyz/fomo-leaderboards.json` → `boards.all[:20]`
-- 备选：`peer.family` 榜单页
+- 总榜：`GET https://prod-api.fomo.family/v2/leaderboard`
+- 7 日：`GET https://prod-api.fomo.family/v2/leaderboard/7d`
+- 24 小时：`GET https://prod-api.fomo.family/v2/leaderboard/24h`
 
-记录：`rank`、`handle`、`name`、`pnl`
+记录：`rank`、`handle`、`name`、`pnl`、`id`（userId）
 
-### 2. 拉取各账户持仓代理数据
+未登录则失败，不要回退其它数据源。
 
-FOMO 完整持仓接口需登录。用 985monitor 画像 spotlight：
+### 2. 拉取各账户持仓
 
-- `https://985monitor.xyz/api/fomo-watch/profile?handle={handle}`
-- 取 `profitSnapshot` 中**未平仓**仓位（`closedAt is null`）
+`GET https://prod-api.fomo.family/v2/users/{userId}/balances`
 
-估算持仓市值（约等于成本 + 未实现盈亏）：
-
-```
-若 profitPercent > 0 且 unrealizedPnlUsd != 0:
-  value = unrealized / (pct/100) + unrealized
-否则用 profitUsd / (pct/100) + profitUsd；再不行则用未实现盈亏兜底
-```
-
-每人通常只有头部盈利仓，**不是完整持仓**。导出时在 JSON `limitation` 中说明。
+用 `shiftedBalance * priceUSD`；跳过 `activeTrade.closedAt` 非空。
 
 ### 3. 按代币聚合
 
@@ -62,8 +56,8 @@ FOMO 完整持仓接口需登录。用 985monitor 画像 spotlight：
 
 ### 4. 补市值
 
-- **持仓来源**：登录态一律用 FOMO `balances` 实时开仓；未登录才用 985monitor spotlight（可能把已平仓仍标为 open）
-- **当前市值 / 成交量 / 24h涨跌 / 创建时间**：登录时来自 FOMO `balances.tokenFilterResult`，写入 `fomo_token_meta_cache.json`；未登录只读缓存。**不再请求 DexScreener/Gecko**
+- **持仓来源**：FOMO `balances` 实时开仓
+- **当前市值 / 成交量 / 24h涨跌 / 创建时间**：来自 FOMO `balances.tokenFilterResult`，写入 `fomo_token_meta_cache.json`
 
 日常只刷新市值时运行：
 
@@ -102,7 +96,7 @@ Windows 输出设 `PYTHONIOENCODING=utf-8`。
 | `fomo_mcap_live_cache.json` | （旧）DexScreener 市值缓存，可忽略 |
 | `tmp_profiles.json` / `tmp_dex_meta.json` | 调试缓存，可删 |
 
-## 全量持仓（方案 A：Privy Token）
+## 全量持仓（Privy Token）
 
 个人主页持仓来自官方：
 
@@ -123,7 +117,7 @@ app-language: zh
 
 1. 网页侧边栏粘贴 Token 或整段 Copy as cURL → 保存到本地 `fomo_auth.json`（勿提交）
 2. 点「全量持仓」走 `mode=full`
-3. 用 985monitor 的 `userId` + 你的 Token 拉每人 balances（`shiftedBalance * priceUSD`；跳过 `activeTrade.closedAt` 非空）
+3. 用官方榜单返回的 `userId` + Token 拉每人 balances
 
 Token 获取：登录 [fomo.family](https://fomo.family/) → F12 Network → 任意 `prod-api.fomo.family` 请求 → Copy as cURL（推荐）或复制 `Authorization: Bearer …`
 

@@ -17,6 +17,7 @@ SKIP_DIRS = {
     ".git",
     ".cursor",
     ".playwright-fomo-chrome",
+    ".playwright-debot-chrome",
     "__pycache__",
     ".venv",
 }
@@ -121,6 +122,7 @@ def main() -> int:
     ensure_remote_dir(sftp, REMOTE_DIR)
     count = upload(sftp)
     print(f"uploaded {count} files", flush=True)
+    run(client, "rm -f /opt/Fomo/fomo_debot.py /opt/Fomo/tests/test_debot_story.py")
 
     code, _, _ = run(client, "chmod +x /opt/Fomo/deploy/remote-setup.sh && bash /opt/Fomo/deploy/remote-setup.sh", timeout=600)
     if code != 0:
@@ -138,12 +140,21 @@ def main() -> int:
     if cert_code != 0:
         print("certbot failed; HTTP may still work if 80/443 are open in the cloud security group", flush=True)
 
+    run(
+        client,
+        "install -m 644 /opt/Fomo/deploy/nginx-fomo-ip.conf /etc/nginx/conf.d/fomo-ip.conf; "
+        "sed -i 's/listen 80 default_server;/listen 80;/' /etc/nginx/conf.d/fomo.conf; "
+        "sed -i 's/listen \\[::\\]:80 default_server;/listen [::]:80;/' /etc/nginx/conf.d/fomo.conf; "
+        "nginx -t && systemctl reload nginx",
+    )
+
     run(client, "systemctl --no-pager --full status fomo nginx | sed -n '1,40p'")
     run(client, "ss -lntp | grep -E ':80|:443|:8787' || true")
     run(
         client,
         f"curl -fsSI http://127.0.0.1/ -H 'Host: {DOMAIN}' | head; "
-        f"curl -kfsSI https://127.0.0.1/ -H 'Host: {DOMAIN}' | head || true",
+        f"curl -kfsSI https://127.0.0.1/ -H 'Host: {DOMAIN}' | head || true; "
+        f"curl -fsS http://127.0.0.1/ -H 'Host: {conf['Host']}' | head -c 180; echo",
     )
     client.close()
     return 0 if cert_code == 0 else 0

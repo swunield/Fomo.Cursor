@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import time
-import urllib.error
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
@@ -20,7 +19,6 @@ from update_token_marketcap import (
     fmt_holder_detail_line,
     fmt_holding_with_mcap_pct,
     fmt_km,
-    get_json,
     load_cache,
     merge_ath,
     normalize_addr,
@@ -173,22 +171,6 @@ def debot_token_url(
     return f"https://debot.ai/token/{chain}/{token}"
 
 
-def estimate_holding_value(item: dict) -> float:
-    unreal = float(item.get("unrealizedPnlUsd") or 0)
-    realized = float(item.get("realizedPnlUsd") or 0)
-    profit = float(item.get("profitUsd") or (unreal + realized))
-    pct = float(item.get("profitPercent") or 0)
-    if pct > 0 and unreal != 0:
-        cost = unreal / (pct / 100.0)
-        return max(0.0, cost + unreal)
-    if pct > 0 and profit != 0:
-        cost = profit / (pct / 100.0)
-        return max(0.0, cost + profit)
-    if item.get("closedAt") is None and unreal > 0:
-        return unreal
-    return 0.0
-
-
 def infer_platform(addr: str, network_id: Any, dex_meta: dict | None) -> str:
     addr = addr or ""
     low = addr.lower()
@@ -290,51 +272,6 @@ def resolve_board(board: str, limit: int | None = None) -> dict:
     }
 
 
-def _traders_from_985(board_key: str, limit: int) -> list[dict]:
-    data = None
-    last_err: Exception | None = None
-    # 985 JSON 经 Cloudflare chunked 传输，urllib 易 IncompleteRead/超时；优先 curl_cffi
-    try:
-        from curl_cffi import requests as crequests
-
-        resp = crequests.get(
-            "https://985monitor.xyz/fomo-leaderboards.json",
-            impersonate="chrome110",
-            timeout=90,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-    except Exception as exc:
-        last_err = exc
-        try:
-            data = get_json(
-                "https://985monitor.xyz/fomo-leaderboards.json",
-                timeout=90,
-                retries=3,
-            )
-        except Exception as exc2:
-            last_err = exc2
-            data = None
-    if not isinstance(data, dict):
-        raise RuntimeError(f"985monitor leaderboard failed: {last_err}")
-    rows = (data.get("boards") or {}).get(board_key) or []
-    traders = []
-    for r in rows[:limit]:
-        traders.append(
-            {
-                "rank": int(r.get("rank") or len(traders) + 1),
-                "handle": r.get("handle") or "",
-                "name": r.get("name") or r.get("handle") or "",
-                "uid": r.get("uid") or "",
-                "pnl": float(r.get("pnl") or 0),
-                "followers": int(r.get("followers") or 0),
-                "numTrades": int(r.get("numTrades") or 0),
-                "source": "985monitor",
-            }
-        )
-    return traders
-
-
 def _traders_from_fomo_api(period: str, limit: int) -> list[dict]:
     """Official FOMO leaderboard.
 
@@ -406,34 +343,14 @@ def fetch_traders(
     limit = cfg["limit"]
     if progress:
         progress(f"正在拉取 FOMO {cfg['label']}…")
-
-    # Prefer official authenticated API; all/7d can fallback to 985monitor.
-    if board_key in ("all", "7d", "24h"):
-        try:
-            traders = _traders_from_fomo_api(board_key, limit)
-            if progress:
-                progress(f"官方{cfg['shortLabel']}已拉取 {len(traders)} 人")
-            return traders
-        except Exception as exc:
-            if board_key in ("all", "7d"):
-                if progress:
-                    progress(f"官方{cfg['shortLabel']}失败，回退 985monitor：{exc}")
-                return _traders_from_985(board_key, limit)
-            raise
-
-    return _traders_from_985(board_key, limit)
+    traders = _traders_from_fomo_api(board_key, limit)
+    if progress:
+        progress(f"官方{cfg['shortLabel']}已拉取 {len(traders)} 人")
+    return traders
 
 
 def fetch_top20_traders(progress: Callable[[str], None] | None = None) -> list[dict]:
     return fetch_traders(progress=progress, board="all")
-
-
-def fetch_profile(handle: str) -> dict:
-    url = f"https://985monitor.xyz/api/fomo-watch/profile?handle={handle}"
-    try:
-        return get_json(url, retries=2)
-    except Exception as exc:
-        return {"ok": False, "error": str(exc), "handle": handle}
 
 
 def collect_open_holdings(
@@ -443,9 +360,7 @@ def collect_open_holdings(
 ) -> tuple[dict[str, list[dict]], dict[str, dict], dict, dict]:
     """Return token_map, profiles, stats, token_meta_cache.
 
-    Holdings source:
-    - Privy 登录态：一律用 FOMO /v2/users/{userId}/balances（实时开仓）
-    - 未登录 fast：985monitor profitSnapshot（可能滞后，已平仓仍可能显示）
+    Holdings always come from FOMO /v2/users/{userId}/balances.
     """
     from fomo_auth import (
         balances_to_holdings,
@@ -460,10 +375,11 @@ def collect_open_holdings(
     token_map: dict[str, list[dict]] = defaultdict(list)
     profiles: dict[str, dict] = {}
     token_meta_cache = load_token_meta_cache()
-    use_balances = bool(get_access_token())
+    if not get_access_token():
+        raise RuntimeError("需要先登录 FOMO（配置 Token），才能拉取持仓")
     stats = {
         "mode": mode,
-        "holdingsSource": "balances" if use_balances else "spotlight",
+        "holdingsSource": "balances",
         "tradersOk": 0,
         "tradersFail": 0,
         "holdingRows": 0,
@@ -471,19 +387,11 @@ def collect_open_holdings(
         "tokenMetaUpdated": 0,
     }
 
-    if mode == "full" and not use_balances:
-        raise RuntimeError("全量模式需要先配置 Privy Access Token")
-
     def one(trader: dict):
-        handle = trader["handle"]
-        # Spotlight only needed when we cannot call balances.
-        if use_balances:
-            return trader, {}
-        profile = fetch_profile(handle)
-        return trader, profile
+        return trader, {}
 
     done = 0
-    with ThreadPoolExecutor(max_workers=4 if use_balances else 6) as pool:
+    with ThreadPoolExecutor(max_workers=4) as pool:
         futures = [pool.submit(one, t) for t in traders]
         for fut in as_completed(futures):
             trader, profile = fut.result()
@@ -491,44 +399,22 @@ def collect_open_holdings(
             handle = trader["handle"]
             profiles[handle] = profile
             name = trader.get("name") or handle
-            src_label = "balances" if use_balances else mode
             if progress:
-                progress(f"拉取持仓 {done}/{len(traders)}：{name} ({src_label})")
+                progress(f"拉取持仓 {done}/{len(traders)}：{name} (balances)")
 
             holdings = []
             try:
-                if use_balances:
-                    user_id = resolve_user_id(
-                        handle, known_uid=trader.get("uid") or ""
-                    )
-                    if not user_id:
-                        raise RuntimeError(f"missing userId for {handle}")
-                    trader["uid"] = user_id
-                    bal_rows = fetch_user_balances(user_id)
-                    holdings = balances_to_holdings(bal_rows)
-                    for h in holdings:
-                        upsert_token_meta(token_meta_cache, h)
-                        stats["tokenMetaUpdated"] += 1
-                else:
-                    snap = profile.get("profitSnapshot") or {}
-                    for item in snap.get("items") or []:
-                        if item.get("closedAt") is not None:
-                            continue
-                        addr = (item.get("tokenAddress") or "").strip()
-                        if not addr:
-                            continue
-                        value = estimate_holding_value(item)
-                        if value <= 0:
-                            continue
-                        holdings.append(
-                            {
-                                "tokenAddress": addr,
-                                "symbol": (item.get("symbol") or "").strip(),
-                                "name": (item.get("name") or "").strip(),
-                                "networkId": item.get("networkId"),
-                                "value": value,
-                            }
-                        )
+                user_id = resolve_user_id(
+                    handle, known_uid=trader.get("uid") or ""
+                )
+                if not user_id:
+                    raise RuntimeError(f"missing userId for {handle}")
+                trader["uid"] = user_id
+                bal_rows = fetch_user_balances(user_id)
+                holdings = balances_to_holdings(bal_rows)
+                for h in holdings:
+                    upsert_token_meta(token_meta_cache, h)
+                    stats["tokenMetaUpdated"] += 1
                 stats["tradersOk"] += 1
             except Exception as exc:
                 stats["tradersFail"] += 1
@@ -575,8 +461,7 @@ def collect_open_holdings(
                 )
                 stats["holdingRows"] += 1
 
-    if use_balances:
-        save_token_meta_cache(token_meta_cache)
+    save_token_meta_cache(token_meta_cache)
     return token_map, profiles, stats, token_meta_cache
 
 
@@ -851,13 +736,9 @@ def persist_outputs(
         "marketCapUpdatedAt": meta.get("updatedAt"),
         "board": cfg["boardKey"],
         "boardLabel": cfg["label"],
-        "source": meta.get("source")
-        or "985monitor FOMO spotlight + DexScreener (fast path ATH cache)",
+        "source": meta.get("source") or "FOMO API balances",
         "limitation": meta.get("limitation")
-        or (
-            "FOMO 官方 API 需登录。本表以 spotlight 未平仓盈利仓估算持仓市值；"
-            "每人通常仅覆盖头部仓位。最高市值优先本地缓存，无历史源时初值=当前市值。"
-        ),
+        or "持仓与行情均来自 FOMO balances（需登录）。",
         "mode": meta.get("mode") or "fast",
         "stats": meta.get("stats") or {},
         "traders": traders,
@@ -953,14 +834,9 @@ def run_pipeline(
         token_meta_cache = backfill_missing_token_meta(
             token_map, token_meta_cache, traders, progress=progress
         )
-    elif progress:
-        progress("未登录：缺失行情的代币将留空（不请求三方）")
 
     if progress:
-        if mode == "full":
-            progress("已用 FOMO balances 更新代币市值/成交量/涨跌缓存…")
-        else:
-            progress("行情优先本地缓存；登录态已尝试补全缺失项…")
+        progress("已用 FOMO balances 更新代币市值/成交量/涨跌缓存…")
 
     if progress:
         progress("合并最高市值缓存…")
@@ -969,30 +845,15 @@ def run_pipeline(
     save_cache(ath_cache)
 
     updated_at = datetime.now(timezone.utc).isoformat()
-    holdings_src = (stats or {}).get("holdingsSource") or (
-        "balances" if get_access_token() else "spotlight"
+    source = f"FOMO {cfg['label']} balances (实时开仓+行情)"
+    limitation = (
+        f"{'全量' if mode == 'full' else '快速'}·{cfg['label']}：持仓来自 Privy balances；"
+        "市值/成交量/24h涨跌来自 tokenFilterResult（已缓存）。"
     )
-    if holdings_src == "balances":
-        source = f"FOMO {cfg['label']} balances (实时开仓+行情)"
-        limitation = (
-            f"{'全量' if mode == 'full' else '快速'}·{cfg['label']}：登录态持仓来自 Privy balances；"
-            "市值/成交量/24h涨跌来自 tokenFilterResult（已缓存）。"
-            "985monitor spotlight 可能滞后，已不再用于开仓判定。"
-        )
-        note = (
-            f"{'全量' if mode == 'full' else '快速'} · {cfg['label']}："
-            "持仓与行情均来自 FOMO balances（实时开仓）。"
-        )
-    else:
-        source = f"985monitor spotlight + FOMO token meta cache ({cfg['label']})"
-        limitation = (
-            f"快速模式：{cfg['label']} spotlight 持仓估算（未登录，可能含已平仓滞后）；"
-            "市值/成交量/24h涨跌仅用本地 FOMO balances 缓存，不请求 DexScreener/Gecko。"
-        )
-        note = (
-            f"快速 · {cfg['label']}：未登录，持仓来自 spotlight（可能滞后）；"
-            "行情用本地缓存。"
-        )
+    note = (
+        f"{'全量' if mode == 'full' else '快速'} · {cfg['label']}："
+        "持仓与行情均来自 FOMO balances（实时开仓）。"
+    )
     src = (traders[0].get("source") if traders else "") or ""
     if cfg["boardKey"] in ("all", "7d", "24h"):
         api_path = (

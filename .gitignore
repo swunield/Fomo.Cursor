@@ -3,6 +3,7 @@ fomo_oauth_pending.json
 Server.conf
 .venv/
 .playwright-fomo-chrome/
+.playwright-debot-chrome/
 __pycache__/
 *.pyc
 .tmp_fomo_js/

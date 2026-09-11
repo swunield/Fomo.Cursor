@@ -2,58 +2,36 @@
 
 ## 榜单
 
-### 985monitor
+只使用官方 FOMO API（需 Privy Token）：
 
-- URL: `https://985monitor.xyz/fomo-leaderboards.json`
-- 路径: `boards.all`（总榜 All-time）
-- 常用字段: `rank`, `handle`, `name`, `pnl`, `followers`, `numTrades`
-- `updatedAt` 可能是毫秒时间戳
+- 总榜：`GET https://prod-api.fomo.family/v2/leaderboard`
+- 7 日：`GET https://prod-api.fomo.family/v2/leaderboard/7d`
+- 24 小时：`GET https://prod-api.fomo.family/v2/leaderboard/24h`
 
-### peer.family
+常用字段: `rank`, `userHandle` / `handle`, `displayName`, `id` / `userId`, `totalPnL` / `pnl7d` / `pnl24h`
 
-- 页面展示 Top10/部分榜单，可作交叉核对
+未授权返回 unauthorized；需要 Privy 会话。TLS 指纹需 `curl_cffi` impersonate，不要用普通 urllib。
 
-## 持仓（spotlight）
+## 持仓
 
-### 985monitor profile
+`GET https://prod-api.fomo.family/v2/users/{userId}/balances`
 
-- `GET https://985monitor.xyz/api/fomo-watch/profile?handle={handle}`
-- 关注 `profitSnapshot` / 开仓列表中的:
-  - `tokenAddress`, `symbol`, `network`/`chain`
-  - `unrealizedPnlUsd`, `realizedPnlUsd`, `profitUsd`, `profitPercent`
-  - `closedAt`（`null` = 未平仓）
+关注：
 
-### 官方 FOMO API（通常不可用）
-
-- Host 线索: `prod-api.fomo.family`, `app-actions.fomo.family`
-- 未授权返回 unauthorized；需要 Privy 会话，不要指望公开拉取完整 `/v2/userTokens`
+- `shiftedBalance` × `priceUSD` → 持仓市值
+- `activeTrade.closedAt`（非空则已平仓，跳过）
+- `tokenFilterResult`：市值、成交量、24h 涨跌、创建时间
 
 ## 市值
 
-### DexScreener
-
-- `https://api.dexscreener.com/latest/dex/tokens/{addr}`（可逗号批量，建议 ≤30）
-- 请求头加 `User-Agent`
-- 取 `liquidity.usd` 最高的 pair
-- 用 `baseToken.address` 匹配目标合约；**优先 `fdv`（完全稀释市值）**，否则 `marketCap`。FOMO/Meme 语境下的「市值」通常指 FDV（如 BUN 流通市值约 5M、FDV 约 18M）
-
-### GeckoTerminal（ATH 估算）
-
-- 限速约 **30 次/分钟**
-- 池子: `/api/v2/networks/{network}/tokens/{address}/pools`
-- K 线: `/api/v2/networks/{network}/pools/{pool}/ohlcv/day?aggregate=1&limit=1000`
-- network 映射示例: `solana`, `bsc`, `base`, `eth`
-- ATH 市值 ≈ `max(high) * (currentMarketCap / currentPrice)`
-- 过滤离谱 high（相对中位数或现价的倍数上限，且 ATH 不宜超过当前市值数十倍）
-
-### ATH 缓存
+登录拉取 balances 时写入 `fomo_token_meta_cache.json`。日常展示优先读该缓存。
 
 `fomo_mcap_ath_cache.json` 按合约地址记录:
 
 - `athMarketCap`, `athMarketCapTime`
 - `lastCurrentMarketCap`, `lastUpdated`
 
-合并逻辑：取「当前市值 / Gecko ATH / 缓存 ATH」中的有效最大值。
+合并逻辑：取「当前市值 / 缓存 ATH」中的有效最大值。
 
 ## 发射平台推断启发
 
