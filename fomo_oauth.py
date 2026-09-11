@@ -23,7 +23,10 @@ from fomo_auth import (
 
 PENDING_PATH = ROOT / "fomo_oauth_pending.json"
 PENDING_TTL_SEC = 15 * 60
-FOMO_REDIRECT = "https://fomo.family/"
+# Privy 只允许跳回 fomo.family。根路径 `/` 在 iOS Universal Link / Android App Link
+# 里会强制打开 FOMO App，一次性 code 就被 App 吃掉。/robots.txt 是静态文本、
+# 不在 App 路径名单里，也不会加载 FOMO 页面上的 Privy SDK。
+FOMO_REDIRECT = "https://fomo.family/robots.txt"
 
 
 def b64url_nopad(data: bytes) -> str:
@@ -147,7 +150,7 @@ def start_browser_google_oauth() -> dict:
         "started": True,
         "mode": "browser",
         "url": url,
-        "progress": "请在打开的窗口用 Google 登录，完成后把 fomo.family 地址栏粘贴回来",
+        "progress": "请用 Google 登录。完成后会打开一段英文文本页，请留在浏览器（不要打开 FOMO App），复制顶部完整地址贴回本页保存",
     }
 
 

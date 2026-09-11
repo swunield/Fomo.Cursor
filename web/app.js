@@ -854,6 +854,14 @@ function hideOauthGoogleLink() {
   if (!oauthGoogleLink) return;
   oauthGoogleLink.classList.add("hidden");
   oauthGoogleLink.removeAttribute("href");
+  oauthGoogleLink.textContent = "打开 Google 授权";
+}
+
+function isMobileBrowser() {
+  return (
+    window.matchMedia("(max-width: 860px)").matches ||
+    /Android|iPhone|iPad|iPod/i.test(navigator.userAgent || "")
+  );
 }
 
 function setGoogleLoginBusy(busy) {
@@ -878,13 +886,16 @@ async function startGoogleLogin() {
   stopGooglePoll();
   hideOauthGoogleLink();
   setGoogleLoginBusy(true);
-  authStatus.textContent = "正在打开 Google 授权…";
+  authStatus.textContent = "正在准备 Google 授权…";
   authStatus.className = "auth-status pending";
+  const mobile = isMobileBrowser();
   let popup = null;
-  try {
-    popup = window.open("about:blank", "fomo-google-oauth");
-  } catch {
-    popup = null;
+  if (!mobile) {
+    try {
+      popup = window.open("about:blank", "fomo-google-oauth");
+    } catch {
+      popup = null;
+    }
   }
   try {
     const res = await fetch("/api/auth/google/start", { method: "POST" });
@@ -900,14 +911,18 @@ async function startGoogleLogin() {
     if (oauthGoogleLink) {
       oauthGoogleLink.href = url;
       oauthGoogleLink.classList.remove("hidden");
+      oauthGoogleLink.textContent = mobile
+        ? "打开 Google 授权（请留在浏览器）"
+        : "打开 Google 授权";
     }
     authStatus.textContent =
-      data.progress || "请在新窗口完成 Google 登录，然后把 fomo.family 地址栏粘贴到下方保存";
+      data.progress ||
+      "请用 Google 登录。完成后留在浏览器，复制地址栏完整链接贴回保存；不要打开 FOMO App";
     authStatus.className = "auth-status pending";
     setGoogleLoginBusy(false);
     if (authToken) {
-      authToken.placeholder = "粘贴 fomo.family 完整链接（含 privy_oauth_code）";
-      authToken.focus();
+      authToken.placeholder = "粘贴浏览器地址栏完整链接（含 privy_oauth_code）";
+      if (!mobile) authToken.focus();
     }
   } catch (e) {
     if (popup && !popup.closed) popup.close();

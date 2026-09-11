@@ -126,6 +126,14 @@ class PrivyCallbackParseTests(unittest.TestCase):
         self.assertEqual(got["authorization_code"], "91opRup2uZjr9dpdYZ4Qe+W8olt/rDymE1loORqzZIc=")
         self.assertEqual(got["state_code"], "342hk7plyQwqcWbJ8ImVoX6oNT4-I9dJc2SMSNfHR-NkiamZ")
 
+    def test_parses_robots_txt_callback_url(self):
+        got = parse_privy_callback(
+            "https://fomo.family/robots.txt?privy_oauth_code=abc.def"
+            "&privy_oauth_state=state-1&privy_oauth_provider=google"
+        )
+        self.assertEqual(got["authorization_code"], "abc.def")
+        self.assertEqual(got["state_code"], "state-1")
+
     def test_parses_raw_query_string(self):
         got = parse_privy_callback(
             "privy_oauth_code=abc.def&privy_oauth_state=state-1"
