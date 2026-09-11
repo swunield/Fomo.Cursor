@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from fomo_auth import auth_status, clear_auth, save_auth, test_auth
-from fomo_google_login import login_status, request_cancel, start_google_login
+from fomo_oauth import complete_browser_google_oauth, parse_privy_callback, start_browser_google_oauth
 from fomo_pipeline import (
     load_cached_result,
     load_settings,
@@ -39,6 +39,10 @@ _job: dict[str, Any] = {
 
 class AuthPayload(BaseModel):
     accessToken: str = Field(default="", description="Privy Bearer access token")
+
+
+class GoogleCompletePayload(BaseModel):
+    callback: str = Field(default="", description="fomo.family callback URL or query")
 
 
 class RefreshPayload(BaseModel):
@@ -113,7 +117,14 @@ def api_auth_status():
 
 @app.post("/api/auth/token")
 def api_auth_save(payload: AuthPayload):
-    saved = save_auth(payload.accessToken)
+    raw = payload.accessToken
+    if parse_privy_callback(raw).get("authorization_code"):
+        try:
+            result = complete_browser_google_oauth(raw)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"ok": True, **result}
+    saved = save_auth(raw)
     checked = test_auth()
     return {"ok": True, **saved, "test": checked}
 
@@ -126,17 +137,18 @@ def api_auth_clear():
 
 @app.post("/api/auth/google/start")
 def api_auth_google_start():
-    return start_google_login()
+    try:
+        return start_browser_google_oauth()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@app.get("/api/auth/google/status")
-def api_auth_google_status():
-    return login_status()
-
-
-@app.post("/api/auth/google/cancel")
-def api_auth_google_cancel():
-    return request_cancel()
+@app.post("/api/auth/google/complete")
+def api_auth_google_complete(payload: GoogleCompletePayload):
+    try:
+        return complete_browser_google_oauth(payload.callback)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/api/settings")

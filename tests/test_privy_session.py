@@ -8,6 +8,7 @@ from pathlib import Path
 import fomo_auth
 from fomo_auth import extract_privy_session, save_auth, load_auth
 from fomo_google_login import is_google_login_target, is_store_url
+from fomo_oauth import create_code_challenge, parse_privy_callback
 
 
 class ExtractPrivySessionTests(unittest.TestCase):
@@ -113,6 +114,36 @@ class GoogleClickTargetTests(unittest.TestCase):
         )
         self.assertTrue(is_google_login_target(tag="button", text="Google", href=""))
         self.assertTrue(is_google_login_target(tag="button", text="使用 Google", href=""))
+
+
+class PrivyCallbackParseTests(unittest.TestCase):
+    def test_parses_fomo_family_callback_url(self):
+        got = parse_privy_callback(
+            "https://fomo.family/?privy_oauth_code=91opRup2uZjr9dpdYZ4Qe%2BW8olt%2FrDymE1loORqzZIc%3D"
+            "&privy_oauth_state=342hk7plyQwqcWbJ8ImVoX6oNT4-I9dJc2SMSNfHR-NkiamZ"
+            "&privy_oauth_provider=google"
+        )
+        self.assertEqual(got["authorization_code"], "91opRup2uZjr9dpdYZ4Qe+W8olt/rDymE1loORqzZIc=")
+        self.assertEqual(got["state_code"], "342hk7plyQwqcWbJ8ImVoX6oNT4-I9dJc2SMSNfHR-NkiamZ")
+
+    def test_parses_raw_query_string(self):
+        got = parse_privy_callback(
+            "privy_oauth_code=abc.def&privy_oauth_state=state-1"
+        )
+        self.assertEqual(got["authorization_code"], "abc.def")
+        self.assertEqual(got["state_code"], "state-1")
+
+    def test_empty_when_not_callback(self):
+        got = parse_privy_callback("eyJhbGciOiJsave.aaa.bbb")
+        self.assertEqual(got["authorization_code"], "")
+
+    def test_challenge_is_s256_base64url(self):
+        # SHA256("test") = n4bQgYhMfWWaL+qgxVrQFaO/TxsrC4Is0V1sFbDwCgg=
+        # urlsafe no pad: n4bQgYhMfWWaL-qgxVrQFaO_TxsrC4Is0V1sFbDwCgg
+        self.assertEqual(
+            create_code_challenge("test"),
+            "n4bQgYhMfWWaL-qgxVrQFaO_TxsrC4Is0V1sFbDwCgg",
+        )
 
 
 if __name__ == "__main__":

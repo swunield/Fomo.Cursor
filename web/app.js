@@ -64,6 +64,7 @@ const tokenCount = document.getElementById("token-count");
 const modeChip = document.getElementById("mode-chip");
 const emptyState = document.getElementById("empty-state");
 const tableWrap = document.getElementById("table-wrap");
+const cardList = document.getElementById("card-list");
 const thead = document.querySelector("#data-table thead");
 const tbody = document.querySelector("#data-table tbody");
 const loadingOverlay = document.getElementById("loading-overlay");
@@ -74,6 +75,8 @@ const btnSaveAuth = document.getElementById("btn-save-auth");
 const btnClearAuth = document.getElementById("btn-clear-auth");
 const btnGoogleAuth = document.getElementById("btn-google-auth");
 const btnCancelGoogle = document.getElementById("btn-cancel-google");
+const oauthGoogleLink = document.getElementById("oauth-google-link");
+const btnCloseSidebar = document.getElementById("btn-close-sidebar");
 const btnApplyFilter = document.getElementById("btn-apply-filter");
 const btnResetFilter = document.getElementById("btn-reset-filter");
 const filterSummary = document.getElementById("filter-summary");
@@ -90,6 +93,10 @@ const hintAllFast = document.getElementById("hint-all-fast");
 const hint7dFast = document.getElementById("hint-7d-fast");
 const hint24hFast = document.getElementById("hint-24h-fast");
 const btnRefreshBoard = document.getElementById("btn-refresh-board");
+const btnMobileRefresh = document.getElementById("btn-mobile-refresh");
+const btnToggleSidebar = document.getElementById("btn-toggle-sidebar");
+const sidebarEl = document.getElementById("sidebar");
+const sidebarBackdrop = document.getElementById("sidebar-backdrop");
 const fetchStatusEl = document.getElementById("fetch-status");
 
 const CACHE_STALE_MS = 10 * 60 * 1000;
@@ -117,9 +124,31 @@ function setFetchStatus(text, mode = "") {
   fetchStatusEl.className = "fetch-status" + (mode ? ` ${mode}` : "");
 }
 
+function isSidebarOpen() {
+  return document.body.classList.contains("sidebar-open");
+}
+
+function openSidebar() {
+  document.body.classList.add("sidebar-open");
+  sidebarBackdrop?.classList.remove("hidden");
+  if (btnToggleSidebar) btnToggleSidebar.setAttribute("aria-label", "关闭菜单");
+}
+
+function closeSidebar() {
+  document.body.classList.remove("sidebar-open");
+  sidebarBackdrop?.classList.add("hidden");
+  if (btnToggleSidebar) btnToggleSidebar.setAttribute("aria-label", "打开菜单");
+}
+
+function toggleSidebar() {
+  if (isSidebarOpen()) closeSidebar();
+  else openSidebar();
+}
+
 function setRefreshBusy(busy) {
   refreshBusy = !!busy;
   if (btnRefreshBoard) btnRefreshBoard.disabled = refreshBusy;
+  if (btnMobileRefresh) btnMobileRefresh.disabled = refreshBusy;
 }
 
 function showLoading(show, text = "正在拉取…") {
@@ -198,6 +227,7 @@ function isSettingsOpen() {
 function openSettings() {
   if (!settingsOverlay) return;
   hideRowTip();
+  closeSidebar();
   settingsOverlay.classList.remove("hidden");
   document.body.classList.add("settings-open");
   btnOpenSettings?.classList.add("is-open");
@@ -468,6 +498,8 @@ function renderTable(payload) {
   if (!rows.length) {
     emptyState.classList.remove("hidden");
     tableWrap.classList.add("hidden");
+    cardList?.classList.add("hidden");
+    if (cardList) cardList.innerHTML = "";
     emptyState.querySelector("p").textContent =
       allRows.length && filtered ? "当前筛选无匹配行" : "尚未加载数据";
     return;
@@ -475,6 +507,7 @@ function renderTable(payload) {
 
   emptyState.classList.add("hidden");
   tableWrap.classList.remove("hidden");
+  renderCards(rows);
 
   thead.innerHTML = `<tr>${cols
     .map((c) => {
@@ -524,11 +557,50 @@ function renderTable(payload) {
     .join("");
 }
 
+function chgClass(val) {
+  const n = parseNumber(val);
+  if (n != null && n > 0) return "chg-up";
+  if (n != null && n < 0) return "chg-down";
+  return "chg-flat";
+}
+
+function renderCards(rows) {
+  if (!cardList) return;
+  if (!rows.length) {
+    cardList.classList.add("hidden");
+    cardList.innerHTML = "";
+    return;
+  }
+  cardList.classList.remove("hidden");
+  cardList.innerHTML = rows
+    .map((row, idx) => {
+      const addr = String(row["合约地址"] || "").replace(/"/g, "&quot;");
+      const chg = row["24h涨跌"] ?? "";
+      return `<article class="token-card" data-row-idx="${idx}">
+        <div class="token-card-head">
+          <button type="button" class="copy-addr-btn" data-addr="${addr}" title="复制合约地址" aria-label="复制合约地址">⧉</button>
+          <div class="token-card-name">${escapeHtml(String(row["名称"] ?? ""))}</div>
+          <div class="num chg ${chgClass(chg)}">${escapeHtml(String(chg))}</div>
+        </div>
+        <dl class="token-card-grid">
+          <div class="token-card-item"><dt>市值</dt><dd>${escapeHtml(String(row["市值"] ?? "—"))}</dd></div>
+          <div class="token-card-item"><dt>成交量</dt><dd>${escapeHtml(String(row["成交量"] ?? "—"))}</dd></div>
+          <div class="token-card-item"><dt>持仓市值</dt><dd>${escapeHtml(String(row["持仓市值"] ?? "—"))}</dd></div>
+          <div class="token-card-item"><dt>持仓人数</dt><dd>${escapeHtml(String(row["持仓人数"] ?? "—"))}</dd></div>
+        </dl>
+        <p class="token-card-holders">${escapeHtml(holdersTableText(row["所有持仓人"]))}</p>
+        <p class="token-card-meta">${escapeHtml(String(row["发射平台"] ?? ""))} · ${escapeHtml(shortenTime(row["创建时间"]))}</p>
+      </article>`;
+    })
+    .join("");
+}
+
 function hideRowTip() {
   tipRowIndex = -1;
   rowTip.classList.add("hidden");
   rowTip.innerHTML = "";
   tbody.querySelectorAll("tr.tip-active").forEach((tr) => tr.classList.remove("tip-active"));
+  cardList?.querySelectorAll(".token-card.tip-active").forEach((el) => el.classList.remove("tip-active"));
 }
 
 function positionRowTip(clientX, clientY) {
@@ -625,6 +697,7 @@ function showRowTip(row, tr, clientX, clientY) {
   const holderLines = holderTipLines(row);
 
   tbody.querySelectorAll("tr.tip-active").forEach((el) => el.classList.remove("tip-active"));
+  cardList?.querySelectorAll(".token-card.tip-active").forEach((el) => el.classList.remove("tip-active"));
   tr.classList.add("tip-active");
   tipRowIndex = Number(tr.dataset.rowIdx);
 
@@ -727,7 +800,14 @@ async function saveAuth() {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ accessToken: token }),
   });
-  const data = await res.json();
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const detail = data.detail;
+    const msg = Array.isArray(detail) ? detail.map((x) => x.msg || x).join("; ") : detail || data.message || "保存失败";
+    authStatus.textContent = String(msg);
+    authStatus.className = "auth-status bad";
+    return;
+  }
   authToken.value = "";
   await refreshAuthStatus();
   if (data.test && data.test.ok === false) {
@@ -744,6 +824,12 @@ async function clearAuth() {
   await fetch("/api/auth/clear", { method: "POST" });
   authToken.value = "";
   await refreshAuthStatus();
+}
+
+function hideOauthGoogleLink() {
+  if (!oauthGoogleLink) return;
+  oauthGoogleLink.classList.add("hidden");
+  oauthGoogleLink.removeAttribute("href");
 }
 
 function setGoogleLoginBusy(busy) {
@@ -766,71 +852,51 @@ function stopGooglePoll() {
 
 async function startGoogleLogin() {
   stopGooglePoll();
+  hideOauthGoogleLink();
   setGoogleLoginBusy(true);
-  authStatus.textContent = "正在打开 Chrome…";
+  authStatus.textContent = "正在打开 Google 授权…";
   authStatus.className = "auth-status pending";
+  let popup = null;
+  try {
+    popup = window.open("about:blank", "fomo-google-oauth");
+  } catch {
+    popup = null;
+  }
   try {
     const res = await fetch("/api/auth/google/start", { method: "POST" });
-    const data = await res.json();
-    if (data.progress) {
-      authStatus.textContent = data.progress;
-      authStatus.className = "auth-status pending";
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || data.message || "无法启动 Google 登录");
+    const url = data.url;
+    if (!url) throw new Error("未返回授权地址");
+    if (popup && !popup.closed) {
+      popup.location.href = url;
+    } else if (popup) {
+      popup.close();
     }
-    pollGoogleLogin();
+    if (oauthGoogleLink) {
+      oauthGoogleLink.href = url;
+      oauthGoogleLink.classList.remove("hidden");
+    }
+    authStatus.textContent =
+      data.progress || "请在新窗口完成 Google 登录，然后把 fomo.family 地址栏粘贴到下方保存";
+    authStatus.className = "auth-status pending";
+    setGoogleLoginBusy(false);
+    if (authToken) {
+      authToken.placeholder = "粘贴 fomo.family 完整链接（含 privy_oauth_code）";
+      authToken.focus();
+    }
   } catch (e) {
+    if (popup && !popup.closed) popup.close();
+    hideOauthGoogleLink();
     setGoogleLoginBusy(false);
-    authStatus.textContent = String(e);
-    authStatus.className = "auth-status bad";
-  }
-}
-
-async function pollGoogleLogin() {
-  try {
-    const res = await fetch("/api/auth/google/status");
-    const data = await res.json();
-    if (data.status === "running") {
-      setGoogleLoginBusy(true);
-      authStatus.textContent = data.progress || "请在 Chrome 中完成 Google 登录…";
-      authStatus.className = "auth-status pending";
-      googlePollTimer = setTimeout(pollGoogleLogin, 1000);
-      return;
-    }
-    setGoogleLoginBusy(false);
-    stopGooglePoll();
-    if (data.status === "done") {
-      authToken.value = "";
-      await refreshAuthStatus();
-      if (data.testOk === false) {
-        authStatus.textContent = `已保存，但校验失败：${data.testError || "unknown"}`;
-        authStatus.className = "auth-status bad";
-      } else if (data.tokenPreview) {
-        authStatus.textContent = `已保存并校验通过 · ${data.tokenPreview}${
-          data.hasRefresh ? " · 可自动续期" : ""
-        }`;
-        authStatus.className = "auth-status ok";
-      }
-      return;
-    }
-    if (data.status === "error") {
-      authStatus.textContent = data.error || "登录失败";
-      authStatus.className = "auth-status bad";
-      return;
-    }
-    await refreshAuthStatus();
-  } catch (e) {
-    setGoogleLoginBusy(false);
-    authStatus.textContent = String(e);
+    authStatus.textContent = e.message || String(e);
     authStatus.className = "auth-status bad";
   }
 }
 
 async function cancelGoogleLogin() {
   stopGooglePoll();
-  try {
-    await fetch("/api/auth/google/cancel", { method: "POST" });
-  } catch {
-    /* ignore */
-  }
+  hideOauthGoogleLink();
   setGoogleLoginBusy(false);
   await refreshAuthStatus();
 }
@@ -979,6 +1045,7 @@ async function startRefresh({ silent = false } = {}) {
 
 async function selectBoard(board) {
   closeSettings();
+  closeSidebar();
   activeBoard = normalizeBoard(board);
   activeMode = "fast";
   setActiveButton(activeBoard);
@@ -1039,6 +1106,15 @@ btnRefreshBoard?.addEventListener("click", () =>
     setFetchStatus(String(e), "error");
   })
 );
+btnMobileRefresh?.addEventListener("click", () =>
+  forceRefreshBoard().catch((e) => {
+    setJobStatus(String(e), "error");
+    setFetchStatus(String(e), "error");
+  })
+);
+btnToggleSidebar?.addEventListener("click", toggleSidebar);
+btnCloseSidebar?.addEventListener("click", closeSidebar);
+sidebarBackdrop?.addEventListener("click", closeSidebar);
 btnSaveAuth.addEventListener("click", () => saveAuth().catch((e) => setJobStatus(String(e), "error")));
 btnClearAuth.addEventListener("click", () => clearAuth().catch((e) => setJobStatus(String(e), "error")));
 btnGoogleAuth?.addEventListener("click", () =>
@@ -1116,6 +1192,42 @@ tbody.addEventListener("click", async (e) => {
   showRowTip(row, tr, e.clientX, e.clientY);
 });
 
+cardList?.addEventListener("click", async (e) => {
+  const btn = e.target.closest(".copy-addr-btn");
+  if (btn) {
+    e.preventDefault();
+    e.stopPropagation();
+    const addr = btn.getAttribute("data-addr") || "";
+    const ok = await copyText(addr);
+    if (!ok) {
+      setJobStatus("复制失败", "error");
+      return;
+    }
+    const prev = btn.textContent;
+    btn.textContent = "✓";
+    btn.classList.add("copied");
+    setJobStatus(`已复制合约 · ${addr.slice(0, 8)}…${addr.slice(-4)}`);
+    setTimeout(() => {
+      btn.textContent = prev;
+      btn.classList.remove("copied");
+    }, 1200);
+    return;
+  }
+  const card = e.target.closest(".token-card[data-row-idx]");
+  if (!card || !lastPayload) return;
+  const idx = Number(card.dataset.rowIdx);
+  const rows = getDisplayRows(lastPayload);
+  const row = rows[idx];
+  if (!row) return;
+  if (tipRowIndex === idx && !rowTip.classList.contains("hidden")) {
+    hideRowTip();
+    return;
+  }
+  cardList.querySelectorAll(".token-card.tip-active").forEach((el) => el.classList.remove("tip-active"));
+  card.classList.add("tip-active");
+  showRowTip(row, card, e.clientX, e.clientY);
+});
+
 thead.addEventListener("click", (e) => {
   const th = e.target.closest("th.sortable[data-col]");
   if (!th) return;
@@ -1123,7 +1235,13 @@ thead.addEventListener("click", (e) => {
 });
 
 document.addEventListener("click", (e) => {
-  if (e.target.closest("#data-table tbody") || e.target.closest("#row-tip")) return;
+  if (
+    e.target.closest("#data-table tbody") ||
+    e.target.closest("#card-list") ||
+    e.target.closest("#row-tip")
+  ) {
+    return;
+  }
   hideRowTip();
 });
 
@@ -1131,6 +1249,10 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
     if (isSettingsOpen()) {
       closeSettings();
+      return;
+    }
+    if (isSidebarOpen()) {
+      closeSidebar();
       return;
     }
     hideRowTip();
@@ -1141,10 +1263,4 @@ loadStoredFilters();
 loadSettings().then(() => {
   refreshAuthStatus();
   selectBoard(activeBoard);
-  fetch("/api/auth/google/status")
-    .then((r) => r.json())
-    .then((data) => {
-      if (data.status === "running") pollGoogleLogin();
-    })
-    .catch(() => {});
 });

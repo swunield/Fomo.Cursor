@@ -11,13 +11,20 @@
 </head>
 <body>
   <div class="grain" aria-hidden="true"></div>
-  <aside class="sidebar">
+  <div id="sidebar-backdrop" class="sidebar-backdrop hidden"></div>
+  <header class="mobile-bar">
+    <button id="btn-toggle-sidebar" class="mobile-icon-btn" type="button" aria-label="打开菜单">☰</button>
+    <span class="mobile-bar-title">FOMO Desk</span>
+    <button id="btn-mobile-refresh" class="mobile-icon-btn" type="button" aria-label="刷新">↻</button>
+  </header>
+  <aside class="sidebar" id="sidebar">
     <div class="brand">
       <div class="brand-mark">FD</div>
       <div>
         <div class="brand-name">FOMO Desk</div>
         <div class="brand-sub">holdings radar</div>
       </div>
+      <button id="btn-close-sidebar" class="sidebar-close-btn" type="button" aria-label="关闭菜单">✕</button>
     </div>
     <nav class="nav">
       <button id="btn-top20" class="nav-btn" type="button" data-board="all">
@@ -46,14 +53,14 @@
         <button id="btn-google-auth" class="auth-btn" type="button">用 Google 登录</button>
         <button id="btn-cancel-google" class="auth-btn ghost hidden" type="button">取消</button>
       </div>
-      <textarea id="auth-token" class="auth-input" rows="3" placeholder="也可粘贴 prod-api 的 Copy as cURL，或 Bearer Token（eyJ...）"></textarea>
+      <a id="oauth-google-link" class="auth-btn oauth-link hidden" href="#" target="_blank" rel="noopener noreferrer">打开 Google 授权</a>
+      <textarea id="auth-token" class="auth-input" rows="3" placeholder="登录后粘贴 fomo.family 地址栏，或 Bearer Token / Copy as cURL"></textarea>
       <div class="auth-actions">
         <button id="btn-save-auth" class="auth-btn" type="button">保存</button>
         <button id="btn-clear-auth" class="auth-btn ghost" type="button">清除</button>
       </div>
       <p class="auth-help">
-        点「用 Google 登录」会打开 Chrome，在 <code>fomo.family</code> 完成 Google 登录后自动保存 Token。
-        也可继续粘贴状态码 200 的 <code>prod-api.fomo.family</code> cURL。Token 约 1 小时过期，有 refresh 时会自动续期。
+        点「用 Google 登录」会在当前浏览器打开 Google 授权。完成后把 <code>fomo.family</code> 地址栏完整链接粘贴到上方并点保存。也可继续粘贴 Bearer Token。
       </p>
     </section>
 
@@ -91,6 +98,7 @@
           <tbody></tbody>
         </table>
       </div>
+      <div id="card-list" class="card-list hidden"></div>
       <div id="loading-overlay" class="loading-overlay hidden">
         <div class="loading-card">
           <div class="spinner"></div>

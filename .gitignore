@@ -1,4 +1,7 @@
 fomo_auth.json
+fomo_oauth_pending.json
+Server.conf
+.venv/
 .playwright-fomo-chrome/
 __pycache__/
 *.pyc

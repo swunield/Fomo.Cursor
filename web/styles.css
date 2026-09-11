@@ -49,6 +49,8 @@ body {
   position: sticky;
   top: 0;
   height: 100vh;
+  height: 100dvh;
+  min-height: 0;
   padding: 22px 16px;
   border-right: 1px solid var(--line);
   background: linear-gradient(180deg, #121815 0%, var(--sidebar) 100%);
@@ -56,7 +58,10 @@ body {
   flex-direction: column;
   gap: 20px;
   z-index: 2;
+  overflow-x: hidden;
   overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
 }
 
 .brand {
@@ -66,6 +71,8 @@ body {
   padding: 4px 6px;
   flex-shrink: 0;
 }
+
+.sidebar-close-btn { display: none; }
 
 .brand-mark {
   width: 42px;
@@ -110,6 +117,7 @@ body {
   transition: border-color 0.15s, background 0.15s, transform 0.15s;
   position: relative;
   overflow: hidden;
+  flex-shrink: 0;
 }
 
 .nav-btn::before {
@@ -165,6 +173,17 @@ body {
 
 .sidebar-foot { margin-top: auto; flex-shrink: 0; }
 
+@media (max-height: 720px) {
+  .sidebar {
+    gap: 12px;
+    padding: 14px 14px 16px;
+  }
+}
+
+.mobile-bar { display: none; }
+.sidebar-backdrop { display: none; }
+.card-list { display: none; }
+
 .auth-box {
   border: 1px solid var(--line);
   padding: 12px;
@@ -172,6 +191,7 @@ body {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  flex-shrink: 0;
 }
 
 .auth-title {
@@ -204,6 +224,13 @@ body {
 }
 
 .auth-actions { display: flex; gap: 8px; }
+
+.oauth-link {
+  display: none;
+  text-decoration: none;
+  text-align: center;
+}
+.oauth-link:not(.hidden) { display: block; }
 
 .auth-btn {
   flex: 1;
@@ -325,9 +352,12 @@ body {
   position: fixed;
   inset: 0;
   z-index: 90;
-  display: grid;
-  place-items: center;
-  padding: 28px 18px;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 16px 12px 24px;
   background:
     radial-gradient(ellipse 70% 50% at 20% 0%, rgba(200, 245, 66, 0.08), transparent 55%),
     rgba(6, 10, 8, 0.78);
@@ -338,12 +368,15 @@ body {
 
 .settings-panel {
   width: min(760px, 100%);
-  max-height: min(88vh, 860px);
-  overflow: auto;
+  max-height: calc(100vh - 40px);
+  max-height: calc(100dvh - 40px);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
   border: 1px solid #5a7a3a;
   background: linear-gradient(180deg, #171f1a 0%, #101612 100%);
   box-shadow: 0 28px 80px rgba(0, 0, 0, 0.55);
-  clip-path: polygon(0 0, 100% 0, 100% calc(100% - 22px), calc(100% - 22px) 100%, 0 100%);
   animation: fadeUp 0.22s ease both;
 }
 
@@ -352,8 +385,10 @@ body {
   justify-content: space-between;
   align-items: flex-start;
   gap: 16px;
+  flex: 0 0 auto;
   padding: 20px 22px 14px;
   border-bottom: 1px solid var(--line);
+  background: #171f1a;
 }
 
 .settings-head h2 {
@@ -382,7 +417,12 @@ body {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 16px;
-  padding: 16px 22px 22px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  padding: 16px 22px 28px;
 }
 
 .settings-section {
@@ -765,13 +805,152 @@ td.name-cell {
 
 @media (max-width: 860px) {
   body { grid-template-columns: 1fr; }
-  .sidebar {
-    position: relative;
-    height: auto;
-    border-right: none;
+  body.sidebar-open { overflow: hidden; }
+  .mobile-bar {
+    display: flex;
+    position: sticky;
+    top: 0;
+    z-index: 45;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
     border-bottom: 1px solid var(--line);
+    background: #121815;
   }
-  .table-scroll { max-height: 70vh; }
+  .mobile-bar-title {
+    flex: 1;
+    font-family: var(--display);
+    font-weight: 800;
+    font-size: 16px;
+    letter-spacing: -0.02em;
+  }
+  .mobile-icon-btn {
+    appearance: none;
+    width: 40px;
+    height: 40px;
+    border: 1px solid var(--line);
+    background: #162016;
+    color: var(--accent);
+    font-size: 18px;
+    cursor: pointer;
+  }
+  .sidebar-backdrop {
+    display: none;
+    position: fixed;
+    inset: 61px 0 0 0;
+    z-index: 35;
+    background: rgba(6, 10, 8, 0.62);
+  }
+  .sidebar-backdrop:not(.hidden),
+  body.sidebar-open .sidebar-backdrop {
+    display: block;
+  }
+  .sidebar {
+    position: fixed;
+    top: 61px;
+    left: 0;
+    bottom: 0;
+    width: min(86vw, 320px);
+    height: auto;
+    z-index: 40;
+    transform: translateX(-105%);
+    transition: transform 0.2s ease;
+    border-right: 1px solid var(--line);
+    border-bottom: none;
+  }
+  body.sidebar-open .sidebar { transform: translateX(0); }
+  .sidebar-close-btn {
+    display: grid;
+    place-items: center;
+    margin-left: auto;
+    appearance: none;
+    width: 36px;
+    height: 36px;
+    border: 1px solid var(--line);
+    background: #162016;
+    color: var(--accent);
+    font-size: 16px;
+    cursor: pointer;
+  }
+  .panel-note { display: none; }
+  .topbar {
+    padding: 14px 16px 10px;
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .topbar h1 { font-size: 22px; }
+  .topbar-meta { justify-content: flex-start; }
+  .table-toolbar { padding: 10px 16px 0; }
+  .table-scroll { display: none !important; }
+  .card-list:not(.hidden) {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 12px 12px 28px;
+  }
+  .token-card {
+    border: 1px solid var(--line);
+    background: rgba(16, 22, 18, 0.92);
+    padding: 12px 12px 10px;
+    cursor: pointer;
+  }
+  .token-card-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 10px;
+  }
+  .token-card-name {
+    flex: 1;
+    min-width: 0;
+    font-family: var(--display);
+    font-weight: 700;
+    font-size: 16px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .token-card-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px 12px;
+  }
+  .token-card-item dt {
+    color: var(--muted);
+    font-size: 10px;
+    margin: 0 0 2px;
+  }
+  .token-card-item dd {
+    margin: 0;
+    font-size: 13px;
+    color: #d7e8c8;
+  }
+  .token-card-holders {
+    margin: 10px 0 0;
+    color: var(--muted);
+    font-size: 11px;
+    line-height: 1.45;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .token-card-meta {
+    margin: 8px 0 0;
+    color: #9bb0a0;
+    font-size: 11px;
+  }
+  .row-tip {
+    left: 10px !important;
+    right: 10px;
+    width: auto;
+    max-width: none;
+    bottom: 10px;
+    top: auto !important;
+  }
   .settings-body { grid-template-columns: 1fr; }
-  .settings-panel { clip-path: none; }
+  .settings-overlay { padding: 8px 8px 16px; }
+  .settings-panel { max-height: calc(100dvh - 16px); }
+  .settings-head { padding: 14px 14px 10px; }
+  .settings-body { padding: 12px 14px 24px; }
 }
