@@ -50,9 +50,11 @@ const FILTER_FIELDS = [
   { key: "holdMax", id: "flt-hold-max" },
   { key: "countMin", id: "flt-count-min" },
   { key: "countMax", id: "flt-count-max" },
+  { key: "daysMin", id: "flt-days-min" },
+  { key: "daysMax", id: "flt-days-max" },
 ];
 
-const boardSettings = { allLimit: 20, dayLimit: 50, h24Limit: 50 };
+const boardSettings = { allLimit: 20, dayLimit: 50, h24Limit: 50, refreshMinutes: 10 };
 
 const btnFast = document.getElementById("btn-top20");
 const btn7d = document.getElementById("btn-7d");
@@ -86,6 +88,7 @@ const rowTip = document.getElementById("row-tip");
 const setAllLimit = document.getElementById("set-all-limit");
 const setDayLimit = document.getElementById("set-day-limit");
 const setH24Limit = document.getElementById("set-h24-limit");
+const setRefreshMinutes = document.getElementById("set-refresh-minutes");
 const btnSaveSettings = document.getElementById("btn-save-settings");
 const btnOpenSettings = document.getElementById("btn-open-settings");
 const btnCloseSettings = document.getElementById("btn-close-settings");
@@ -102,9 +105,8 @@ const sidebarBackdrop = document.getElementById("sidebar-backdrop");
 const mobileSort = document.getElementById("mobile-sort");
 const fetchStatusEl = document.getElementById("fetch-status");
 
-const CACHE_STALE_MS = 10 * 60 * 1000;
-
 let pollTimer = null;
+let autoRefreshTimer = null;
 let activeMode = "fast";
 let activeBoard = "all";
 let lastPayload = null;
@@ -202,8 +204,14 @@ function cacheAgeMs(iso) {
   return Date.now() - t;
 }
 
+function refreshIntervalMs() {
+  const mins = Number(boardSettings.refreshMinutes);
+  const n = Number.isFinite(mins) && mins > 0 ? mins : 10;
+  return n * 60 * 1000;
+}
+
 function isCacheStale(iso) {
-  return cacheAgeMs(iso) > CACHE_STALE_MS;
+  return cacheAgeMs(iso) > refreshIntervalMs();
 }
 
 function formatTime(iso) {
@@ -295,13 +303,16 @@ function applySettingsToUi(s) {
   boardSettings.allLimit = Number(s.allLimit) || 20;
   boardSettings.dayLimit = Number(s.dayLimit) || 50;
   boardSettings.h24Limit = Number(s.h24Limit) || 50;
+  boardSettings.refreshMinutes = Number(s.refreshMinutes) || 10;
   if (setAllLimit) setAllLimit.value = String(boardSettings.allLimit);
   if (setDayLimit) setDayLimit.value = String(boardSettings.dayLimit);
   if (setH24Limit) setH24Limit.value = String(boardSettings.h24Limit);
+  if (setRefreshMinutes) setRefreshMinutes.value = String(boardSettings.refreshMinutes);
   if (hintAllFast) hintAllFast.textContent = `前${boardSettings.allLimit}`;
   if (hint7dFast) hint7dFast.textContent = `前${boardSettings.dayLimit}`;
   if (hint24hFast) hint24hFast.textContent = `前${boardSettings.h24Limit}`;
   updateSettingsHint();
+  scheduleAutoRefresh();
 }
 
 function isSettingsOpen() {
@@ -348,16 +359,17 @@ async function saveBoardSettings() {
   const allLimit = Number(setAllLimit?.value);
   const dayLimit = Number(setDayLimit?.value);
   const h24Limit = Number(setH24Limit?.value);
+  const refreshMinutes = Number(setRefreshMinutes?.value);
   const res = await fetch("/api/settings", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ allLimit, dayLimit, h24Limit }),
+    body: JSON.stringify({ allLimit, dayLimit, h24Limit, refreshMinutes }),
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok || !data.ok) throw new Error(data.detail || data.message || "保存设置失败");
   applySettingsToUi(data);
   setJobStatus(
-    `设置已保存 · 总榜前${data.allLimit} / 7日前${data.dayLimit} / 24h前${data.h24Limit}`
+    `设置已保存 · 总榜前${data.allLimit} / 7日前${data.dayLimit} / 24h前${data.h24Limit} / 刷新${data.refreshMinutes}分钟`
   );
 }
 
@@ -373,16 +385,7 @@ function setActiveButton(board = activeBoard) {
 function filterRows(rows) {
   const f = getActiveFilters();
   if (!hasAnyFilter(f)) return { rows, filtered: false, total: rows.length };
-  const out = rows.filter((row) => {
-    const mcap = parseNumber(row["市值"]);
-    const hold = parseNumber(row["持仓市值"]);
-    const count = parseNumber(row["持仓人数"]);
-    return (
-      inRange(mcap, f.mcapMin, f.mcapMax) &&
-      inRange(hold, f.holdMin, f.holdMax) &&
-      inRange(count, f.countMin, f.countMax)
-    );
-  });
+  const out = rows.filter((row) => matchesTokenFilters(row, f));
   return { rows: out, filtered: true, total: rows.length };
 }
 
@@ -463,12 +466,23 @@ function getActiveFilters() {
     holdMax: parseNumber(raw.holdMax),
     countMin: parseNumber(raw.countMin),
     countMax: parseNumber(raw.countMax),
+    daysMin: parseNumber(raw.daysMin),
+    daysMax: parseNumber(raw.daysMax),
     raw,
   };
 }
 
 function hasAnyFilter(f) {
-  return [f.mcapMin, f.mcapMax, f.holdMin, f.holdMax, f.countMin, f.countMax].some((v) => v != null);
+  return [
+    f.mcapMin,
+    f.mcapMax,
+    f.holdMin,
+    f.holdMax,
+    f.countMin,
+    f.countMax,
+    f.daysMin,
+    f.daysMax,
+  ].some((v) => v != null);
 }
 
 function inRange(value, min, max) {
@@ -477,6 +491,19 @@ function inRange(value, min, max) {
   if (min != null && value < min) return false;
   if (max != null && value > max) return false;
   return true;
+}
+
+function matchesTokenFilters(row, f) {
+  const mcap = parseNumber(row["市值"]);
+  const hold = parseNumber(row["持仓市值"]);
+  const count = parseNumber(row["持仓人数"]);
+  const days = parseNumber(row["天数"] || fmtAgeDays(row["创建时间"]));
+  return (
+    inRange(mcap, f.mcapMin, f.mcapMax) &&
+    inRange(hold, f.holdMin, f.holdMax) &&
+    inRange(count, f.countMin, f.countMax) &&
+    inRange(days, f.daysMin, f.daysMax)
+  );
 }
 
 function compareSortValues(a, b, col, dir) {
@@ -854,6 +881,14 @@ function showRowTip(row, tr, clientX, clientY) {
   const createdAt = shortenTime(row["创建时间"]) || "—";
   const ageDays = fmtAgeDays(row["创建时间"]);
   const createdText = ageDays ? `${createdAt} · ${ageDays}天` : createdAt;
+  const holderCount =
+    row["持仓人数"] != null && String(row["持仓人数"]).trim() !== ""
+      ? String(row["持仓人数"]).trim()
+      : "—";
+  const holdMcap =
+    row["持仓市值"] != null && String(row["持仓市值"]).trim() !== ""
+      ? String(row["持仓市值"]).trim()
+      : "—";
   const holderLines = holderTipLines(row);
 
   tbody.querySelectorAll("tr.tip-active").forEach((el) => el.classList.remove("tip-active"));
@@ -870,7 +905,7 @@ function showRowTip(row, tr, clientX, clientY) {
     <div class="row-tip-line"><span class="row-tip-label">平台</span>${escapeHtml(String(platform))}</div>
     <div class="row-tip-line"><span class="row-tip-label">创建时间</span>${escapeHtml(String(createdText))}</div>
     <div class="row-tip-line">
-      <span class="row-tip-label">全部</span>
+      <span class="row-tip-label">持仓</span>${escapeHtml(`${holderCount}人 · ${holdMcap}`)}
       <div class="row-tip-holders">${holdersHtml}</div>
     </div>
   `;
@@ -1400,6 +1435,19 @@ async function forceRefreshBoard() {
   await startRefresh({ silent: false, force: true });
 }
 
+function scheduleAutoRefresh() {
+  if (autoRefreshTimer) {
+    clearInterval(autoRefreshTimer);
+    autoRefreshTimer = null;
+  }
+  autoRefreshTimer = setInterval(tickAutoRefresh, refreshIntervalMs());
+}
+
+function tickAutoRefresh() {
+  if (document.hidden || refreshBusy) return;
+  startRefresh({ silent: true, force: false }).catch(() => {});
+}
+
 function onSelectBoardError(e) {
   const msg = networkErrorMessage(e) || String(e);
   if (!msg) return;
@@ -1464,7 +1512,7 @@ for (const f of FILTER_FIELDS) {
     if (e.key === "Enter") applyFilters();
   });
 }
-[setAllLimit, setDayLimit, setH24Limit].forEach((el) => {
+[setAllLimit, setDayLimit, setH24Limit, setRefreshMinutes].forEach((el) => {
   if (!el) return;
   el.addEventListener("keydown", (e) => {
     if (e.key === "Enter") {
@@ -1588,6 +1636,12 @@ document.addEventListener("keydown", (e) => {
     }
     hideRowTip();
   }
+});
+
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden || refreshBusy) return;
+  const stamp = lastPayload?.generatedAt || lastPayload?.updatedAt;
+  if (stamp && isCacheStale(stamp)) tickAutoRefresh();
 });
 
 loadStoredFilters();

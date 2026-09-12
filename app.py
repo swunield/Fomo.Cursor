@@ -62,6 +62,7 @@ class SettingsPayload(BaseModel):
     allLimit: int | None = Field(default=None, description="总榜人数")
     dayLimit: int | None = Field(default=None, description="7日榜人数")
     h24Limit: int | None = Field(default=None, description="24小时榜人数")
+    refreshMinutes: int | None = Field(default=None, description="自动刷新间隔（分钟）")
 
 
 def _normalize_board(board: str | None) -> str:
@@ -110,7 +111,7 @@ def _format_display_rows(rows):
         created_raw = copied.get("创建时间")
         if created_raw not in (None, ""):
             copied["创建时间"] = fmt_created_at_local(created_raw)
-        copied["天数"] = fmt_token_age_days(created_raw)
+            copied["天数"] = fmt_token_age_days(created_raw)
         if copied.get("持仓市值") not in (None, ""):
             copied["持仓市值"] = fmt_holding_with_mcap_pct(
                 copied.get("持仓市值"), copied.get("市值")
@@ -223,6 +224,7 @@ def api_settings_save(payload: SettingsPayload):
         all_limit=payload.allLimit,
         day_limit=payload.dayLimit,
         h24_limit=payload.h24Limit,
+        refresh_minutes=payload.refreshMinutes,
     )
     return {
         "ok": True,
@@ -272,7 +274,8 @@ def fomo_refresh(payload: RefreshPayload | None = None):
         raise HTTPException(status_code=400, detail="全量模式需先配置 Privy Access Token")
     if not force:
         cached = load_cached_result(board=board)
-        if is_cache_fresh(cached):
+        max_age = int(load_settings().get("refreshMinutes") or 10) * 60
+        if is_cache_fresh(cached, max_age_sec=max_age):
             body = _payload_from_cached(cached)
             body.update(
                 {

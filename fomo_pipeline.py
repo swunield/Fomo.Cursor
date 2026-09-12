@@ -45,9 +45,12 @@ DEFAULT_SETTINGS = {
     "allLimit": 20,
     "dayLimit": 50,
     "h24Limit": 50,
+    "refreshMinutes": 10,
 }
 LIMIT_MIN = 1
 LIMIT_MAX = 200
+REFRESH_MINUTES_MIN = 1
+REFRESH_MINUTES_MAX = 180
 
 BOARD_CONFIG = {
     "all": {
@@ -207,6 +210,14 @@ def clamp_limit(value: Any, default: int) -> int:
     return max(LIMIT_MIN, min(LIMIT_MAX, n))
 
 
+def clamp_refresh_minutes(value: Any, default: int) -> int:
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        n = int(default)
+    return max(REFRESH_MINUTES_MIN, min(REFRESH_MINUTES_MAX, n))
+
+
 def load_settings() -> dict:
     data = dict(DEFAULT_SETTINGS)
     if SETTINGS_PATH.exists():
@@ -223,6 +234,10 @@ def load_settings() -> dict:
             data.get("h24Limit", data.get("hourLimit")),
             DEFAULT_SETTINGS["h24Limit"],
         ),
+        "refreshMinutes": clamp_refresh_minutes(
+            data.get("refreshMinutes"),
+            DEFAULT_SETTINGS["refreshMinutes"],
+        ),
     }
 
 
@@ -230,6 +245,7 @@ def save_settings(
     all_limit: Any = None,
     day_limit: Any = None,
     h24_limit: Any = None,
+    refresh_minutes: Any = None,
 ) -> dict:
     cur = load_settings()
     if all_limit is not None:
@@ -238,6 +254,10 @@ def save_settings(
         cur["dayLimit"] = clamp_limit(day_limit, cur["dayLimit"])
     if h24_limit is not None:
         cur["h24Limit"] = clamp_limit(h24_limit, cur["h24Limit"])
+    if refresh_minutes is not None:
+        cur["refreshMinutes"] = clamp_refresh_minutes(
+            refresh_minutes, DEFAULT_SETTINGS["refreshMinutes"]
+        )
     SETTINGS_PATH.write_text(
         json.dumps(cur, ensure_ascii=False, indent=2), encoding="utf-8"
     )
@@ -757,7 +777,11 @@ def persist_outputs(
         meta["persistWarnings"] = errors
 
 
-CACHE_FRESH_SEC = 10 * 60
+CACHE_FRESH_SEC = DEFAULT_SETTINGS["refreshMinutes"] * 60
+
+
+def cache_fresh_sec() -> int:
+    return load_settings()["refreshMinutes"] * 60
 
 
 def is_cache_fresh(cached: dict | None, *, now: datetime | None = None, max_age_sec: int = CACHE_FRESH_SEC) -> bool:

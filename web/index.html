@@ -73,7 +73,7 @@
     <header class="topbar">
       <div>
         <h1 id="panel-title">数据区</h1>
-        <p id="panel-note" class="panel-note">点击左侧榜单先展示缓存；超过 10 分钟会后台静默更新。顶部「刷新」可强制拉取最新。</p>
+        <p id="panel-note" class="panel-note">点击左侧榜单先展示缓存；超过自动刷新间隔会后台静默更新。顶部「刷新」可强制拉取最新。</p>
       </div>
       <div class="topbar-meta">
         <div id="mode-chip" class="meta-chip">board —</div>
@@ -129,7 +129,7 @@
       <div class="settings-body">
         <section class="settings-section" id="board-settings-box">
           <div class="auth-title">人数</div>
-          <p class="filter-help">榜单取前 N 名交易员（1–200）</p>
+          <p class="filter-help">榜单取前 N 名交易员（1–200）。自动刷新作用于当前榜单，默认 10 分钟。</p>
           <label class="filter-row">
             <span>总榜人数</span>
             <input id="set-all-limit" class="filter-input" type="number" min="1" max="200" step="1" value="20" />
@@ -142,14 +142,18 @@
             <span>24小时人数</span>
             <input id="set-h24-limit" class="filter-input" type="number" min="1" max="200" step="1" value="50" />
           </label>
+          <label class="filter-row">
+            <span>自动刷新（分钟）</span>
+            <input id="set-refresh-minutes" class="filter-input" type="number" min="1" max="180" step="1" value="10" />
+          </label>
           <div class="auth-actions">
-            <button id="btn-save-settings" class="auth-btn" type="button">保存人数</button>
+            <button id="btn-save-settings" class="auth-btn" type="button">保存设置</button>
           </div>
         </section>
 
         <section class="settings-section" id="token-filter-box">
           <div class="auth-title">代币筛选</div>
-          <p class="filter-help">作用于当前榜单结果；留空不限。市值支持 K/M，如 <code>500K</code>、<code>10M</code></p>
+          <p class="filter-help">作用于当前榜单结果；留空不限。市值支持 K/M，如 <code>500K</code>、<code>10M</code>；天数支持一位小数，如 <code>1.5</code>、<code>30</code></p>
           <label class="filter-row">
             <span>市值区间</span>
             <div class="filter-range">
@@ -174,6 +178,14 @@
               <input id="flt-count-max" class="filter-input" type="text" inputmode="numeric" placeholder="最大" />
             </div>
           </label>
+          <label class="filter-row">
+            <span>天数区间</span>
+            <div class="filter-range">
+              <input id="flt-days-min" class="filter-input" type="text" inputmode="decimal" placeholder="最小" />
+              <span class="filter-dash">–</span>
+              <input id="flt-days-max" class="filter-input" type="text" inputmode="decimal" placeholder="最大" />
+            </div>
+          </label>
           <div class="auth-actions">
             <button id="btn-apply-filter" class="auth-btn" type="button">应用筛选</button>
             <button id="btn-reset-filter" class="auth-btn ghost" type="button">重置</button>
@@ -184,6 +196,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=20260912e"></script>
+  <script src="/static/app.js?v=20260912i"></script>
 </body>
 </html>
