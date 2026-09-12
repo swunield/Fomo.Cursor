@@ -26,6 +26,7 @@ CSV_COLUMNS = (
     "名称",
     "市值",
     "成交量",
+    "天数",
     "24h涨跌",
     "持仓市值",
     "持仓人数",
@@ -53,12 +54,11 @@ LEGACY_COL_RENAME = {
     "最低持仓价值": "最低持仓市值",
 }
 VALUE_COLS = (
-    "持仓市值",
     "人均持仓市值",
     "市值",
     "成交量",
 )
-HOLDING_VALUE_COLS = ("最高持仓市值", "最低持仓市值")
+HOLDING_VALUE_COLS = ("持仓市值", "最高持仓市值", "最低持仓市值")
 CHANGE_COLS = ("24h涨跌",)
 HOLDER_COLS = ("所有持仓人", "最高持仓人", "最低持仓人")
 GECKO_NETWORKS = {
@@ -650,6 +650,70 @@ def fmt_position_updated_at(value) -> str:
     return local.strftime("%Y%m%d %H:%M")
 
 
+def fmt_created_at_local(value) -> str:
+    """Display createdAt as 'YYYY-MM-DD HH:mm:ss' in Asia/Shanghai."""
+    if value in (None, ""):
+        return ""
+    text = str(value).strip()
+    if not text:
+        return ""
+    if (
+        len(text) >= 19
+        and text[10] == " "
+        and "T" not in text
+        and "+" not in text
+        and "Z" not in text.upper()
+    ):
+        return text[:19]
+    dt = _parse_dt(value)
+    if not dt:
+        return text
+    try:
+        from zoneinfo import ZoneInfo
+
+        local = dt.astimezone(ZoneInfo("Asia/Shanghai"))
+    except Exception:
+        local = dt.astimezone(timezone(timedelta(hours=8)))
+    return local.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _created_at_dt(value):
+    if value in (None, ""):
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if (
+        len(text) >= 19
+        and text[10] == " "
+        and "T" not in text
+        and "+" not in text
+        and "Z" not in text.upper()
+    ):
+        naive = datetime.strptime(text[:19], "%Y-%m-%d %H:%M:%S")
+        try:
+            from zoneinfo import ZoneInfo
+
+            return naive.replace(tzinfo=ZoneInfo("Asia/Shanghai"))
+        except Exception:
+            return naive.replace(tzinfo=timezone(timedelta(hours=8)))
+    return _parse_dt(value)
+
+
+def fmt_token_age_days(value, now=None) -> str:
+    """Token age in days from createdAt, one decimal place."""
+    dt = _created_at_dt(value)
+    if not dt:
+        return ""
+    end = now or datetime.now(timezone.utc)
+    if end.tzinfo is None:
+        end = end.replace(tzinfo=timezone.utc)
+    secs = (end - dt.astimezone(timezone.utc)).total_seconds()
+    if secs < 0:
+        secs = 0
+    return f"{secs / 86400.0:.1f}"
+
+
 def fmt_holder_detail_line(
     rank,
     name,
@@ -705,7 +769,7 @@ def parse_holder_detail_line(line: str):
     )
 
 
-def normalize_row_display(row):
+def normalize_row_display(row, now=None):
     details = row.get("持仓明细")
     if isinstance(details, str) and details.strip():
         details = [ln.strip() for ln in details.splitlines() if ln.strip()]
@@ -769,6 +833,10 @@ def normalize_row_display(row):
     for col in HOLDING_VALUE_COLS:
         if col in row:
             row[col] = fmt_holding_with_mcap_pct(row.get(col), mcap)
+    created_raw = row.get("创建时间")
+    if "创建时间" in row:
+        row["创建时间"] = fmt_created_at_local(created_raw)
+    row["天数"] = fmt_token_age_days(created_raw, now=now)
     return row
 
 

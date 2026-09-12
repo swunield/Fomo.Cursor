@@ -94,8 +94,33 @@ def _run_job(mode: str, board: str, limit: int | None = None) -> None:
             _job["progress"] = "失败"
 
 
+def _format_display_rows(rows):
+    from update_token_marketcap import (
+        fmt_created_at_local,
+        fmt_holding_with_mcap_pct,
+        fmt_token_age_days,
+    )
+
+    out = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            out.append(row)
+            continue
+        copied = dict(row)
+        created_raw = copied.get("创建时间")
+        if created_raw not in (None, ""):
+            copied["创建时间"] = fmt_created_at_local(created_raw)
+        copied["天数"] = fmt_token_age_days(created_raw)
+        if copied.get("持仓市值") not in (None, ""):
+            copied["持仓市值"] = fmt_holding_with_mcap_pct(
+                copied.get("持仓市值"), copied.get("市值")
+            )
+        out.append(copied)
+    return out
+
+
 def _payload_from_cached(cached: dict, source: str = "cache") -> dict:
-    rows = cached.get("rows") or cached.get("tokens") or []
+    rows = _format_display_rows(cached.get("rows") or cached.get("tokens") or [])
     return {
         "ok": True,
         "source": source,
@@ -303,6 +328,8 @@ def fomo_result(board: str = Query(default="all")):
             cached = load_cached_result(board=board)
             if cached:
                 return _payload_from_cached(cached)
+        result = dict(_job["result"])
+        result["rows"] = _format_display_rows(result.get("rows") or [])
         return {"ok": True, "source": "live", **result}
 
 

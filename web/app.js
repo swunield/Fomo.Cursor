@@ -2,6 +2,7 @@ const COLUMNS = [
   "名称",
   "市值",
   "成交量",
+  "天数",
   "24h涨跌",
   "持仓市值",
   "持仓人数",
@@ -32,6 +33,7 @@ const LEGACY_COL_RENAME = {
 const NUM_COLS = new Set([
   "市值",
   "成交量",
+  "天数",
   "24h涨跌",
   "持仓市值",
   "持仓人数",
@@ -219,18 +221,53 @@ function shortenTime(val) {
   if (val == null || val === "") return "";
   const raw = String(val).trim();
   if (!raw) return "";
-  let d = new Date(raw);
-  if (Number.isNaN(d.getTime()) && /^\d+(\.\d+)?$/.test(raw)) {
+  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(raw)) return raw;
+
+  let d = null;
+  if (/^\d+(\.\d+)?$/.test(raw)) {
     let ts = Number(raw);
     if (ts > 0 && ts < 1e12) ts *= 1000;
     d = new Date(ts);
+  } else {
+    let iso = raw.replace(" ", "T").replace(/(\.\d{3})\d+/, "$1");
+    if (!/[zZ]$/.test(iso) && !/[+-]\d{2}:?\d{2}$/.test(iso)) iso += "Z";
+    iso = iso.replace(/[+-]00:00$/, "Z");
+    d = new Date(iso);
   }
-  if (Number.isNaN(d.getTime())) {
-    if (raw.includes("T")) return raw.slice(0, 19).replace("T", " ");
-    return raw;
+  if (!d || Number.isNaN(d.getTime())) return raw;
+
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(d);
+  const pick = (type) => parts.find((p) => p.type === type)?.value || "";
+  return `${pick("year")}-${pick("month")}-${pick("day")} ${pick("hour")}:${pick("minute")}:${pick("second")}`;
+}
+
+function createdAtMs(val) {
+  const raw = String(val || "").trim();
+  if (!raw) return 0;
+  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(raw)) {
+    const t = Date.parse(`${raw.replace(" ", "T")}+08:00`);
+    return Number.isNaN(t) ? 0 : t;
   }
-  const pad = (n) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  const t = Date.parse(raw.includes("T") || /^\d+$/.test(raw) ? raw : raw.replace(" ", "T"));
+  return Number.isNaN(t) ? 0 : t;
+}
+
+function fmtAgeDays(createdAt, nowMs) {
+  const t = createdAtMs(createdAt);
+  if (!t) return "";
+  const now = nowMs == null ? Date.now() : nowMs;
+  let days = (now - t) / 86400000;
+  if (days < 0) days = 0;
+  return days.toFixed(1);
 }
 
 function normalizeBoard(board) {
@@ -447,8 +484,8 @@ function compareSortValues(a, b, col, dir) {
   const av = a?.[col];
   const bv = b?.[col];
   if (NUM_COLS.has(col) || col === "创建时间") {
-    const an = col === "创建时间" ? Date.parse(String(av || "")) || 0 : parseNumber(av);
-    const bn = col === "创建时间" ? Date.parse(String(bv || "")) || 0 : parseNumber(bv);
+    const an = col === "创建时间" ? createdAtMs(av) : parseNumber(av);
+    const bn = col === "创建时间" ? createdAtMs(bv) : parseNumber(bv);
     const aEmpty = an == null;
     const bEmpty = bn == null;
     if (aEmpty && bEmpty) return 0;
@@ -647,6 +684,7 @@ function renderTable(payload) {
         .map((c) => {
           let val = row[c] ?? "";
           if (c === "创建时间") val = shortenTime(val);
+          if (c === "天数") val = fmtAgeDays(row["创建时间"]) || val;
           let cls = "";
           if (NUM_COLS.has(c)) cls = "num";
           if (c === "24h涨跌") {
@@ -704,6 +742,7 @@ function renderCards(rows) {
         <dl class="token-card-grid">
           <div class="token-card-item"><dt>市值</dt><dd>${escapeHtml(String(row["市值"] ?? "—"))}</dd></div>
           <div class="token-card-item"><dt>成交量</dt><dd>${escapeHtml(String(row["成交量"] ?? "—"))}</dd></div>
+          <div class="token-card-item"><dt>天数</dt><dd>${escapeHtml(fmtAgeDays(row["创建时间"]) || "—")}</dd></div>
           <div class="token-card-item"><dt>持仓市值</dt><dd>${escapeHtml(String(row["持仓市值"] ?? "—"))}</dd></div>
           <div class="token-card-item"><dt>持仓人数</dt><dd>${escapeHtml(String(row["持仓人数"] ?? "—"))}</dd></div>
         </dl>
@@ -813,6 +852,8 @@ function showRowTip(row, tr, clientX, clientY) {
   const name = row["名称"] || "—";
   const platform = row["发射平台"] || "—";
   const createdAt = shortenTime(row["创建时间"]) || "—";
+  const ageDays = fmtAgeDays(row["创建时间"]);
+  const createdText = ageDays ? `${createdAt} · ${ageDays}天` : createdAt;
   const holderLines = holderTipLines(row);
 
   tbody.querySelectorAll("tr.tip-active").forEach((el) => el.classList.remove("tip-active"));
@@ -827,7 +868,7 @@ function showRowTip(row, tr, clientX, clientY) {
   rowTip.innerHTML = `
     <div class="row-tip-line row-tip-name">${escapeHtml(String(name))}</div>
     <div class="row-tip-line"><span class="row-tip-label">平台</span>${escapeHtml(String(platform))}</div>
-    <div class="row-tip-line"><span class="row-tip-label">创建时间</span>${escapeHtml(String(createdAt))}</div>
+    <div class="row-tip-line"><span class="row-tip-label">创建时间</span>${escapeHtml(String(createdText))}</div>
     <div class="row-tip-line">
       <span class="row-tip-label">全部</span>
       <div class="row-tip-holders">${holdersHtml}</div>
