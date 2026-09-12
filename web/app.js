@@ -216,10 +216,21 @@ function formatTime(iso) {
 }
 
 function shortenTime(val) {
-  if (!val) return "";
-  const s = String(val);
-  if (s.includes("T")) return s.slice(0, 19).replace("T", " ");
-  return s;
+  if (val == null || val === "") return "";
+  const raw = String(val).trim();
+  if (!raw) return "";
+  let d = new Date(raw);
+  if (Number.isNaN(d.getTime()) && /^\d+(\.\d+)?$/.test(raw)) {
+    let ts = Number(raw);
+    if (ts > 0 && ts < 1e12) ts *= 1000;
+    d = new Date(ts);
+  }
+  if (Number.isNaN(d.getTime())) {
+    if (raw.includes("T")) return raw.slice(0, 19).replace("T", " ");
+    return raw;
+  }
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
 function normalizeBoard(board) {

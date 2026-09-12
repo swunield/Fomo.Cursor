@@ -20,9 +20,27 @@ SKIP_DIRS = {
     ".playwright-debot-chrome",
     "__pycache__",
     ".venv",
+    "tmp_fomo_js",
+    ".tmp_fomo_js",
 }
-SKIP_FILES = {"Server.conf", "push.py"}
+SKIP_FILES = {
+    "Server.conf",
+    "push.py",
+    "fomo_auth.json",
+    "fomo_oauth_pending.json",
+    "fomo_token_meta_cache.json",
+    "fomo_mcap_ath_cache.json",
+    "fomo_mcap_live_cache.json",
+    "fomo_settings.json",
+}
 SKIP_SUFFIXES = {".pyc", ".bat"}
+SKIP_NAME_PREFIXES = ("tmp_", "probe_")
+SKIP_NAME_SUFFIXES = (
+    "_last_result.json",
+    "_holdings_by_token.csv",
+    "_holdings_by_token.json",
+    "_holdings_by_token.md",
+)
 
 
 def load_conf() -> dict[str, str]:
@@ -54,9 +72,14 @@ def should_skip(path: Path) -> bool:
     rel = path.relative_to(ROOT)
     if any(part in SKIP_DIRS for part in rel.parts):
         return True
-    if path.name in SKIP_FILES:
+    name = path.name
+    if name in SKIP_FILES:
         return True
     if path.suffix in SKIP_SUFFIXES:
+        return True
+    if name.startswith(SKIP_NAME_PREFIXES):
+        return True
+    if name.endswith(SKIP_NAME_SUFFIXES):
         return True
     return False
 
