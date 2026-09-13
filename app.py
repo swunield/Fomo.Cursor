@@ -61,7 +61,7 @@ class RefreshPayload(BaseModel):
 class SettingsPayload(BaseModel):
     allLimit: int | None = Field(default=None, description="总榜人数")
     dayLimit: int | None = Field(default=None, description="7日榜人数")
-    h24Limit: int | None = Field(default=None, description="24小时榜人数")
+    h24Limit: int | None = Field(default=None, description="1日榜人数")
     refreshMinutes: int | None = Field(default=None, description="自动刷新间隔（分钟）")
 
 
@@ -130,6 +130,10 @@ def _format_display_rows(rows):
     return out
 
 
+def _relabel_board_text(value: str) -> str:
+    return (value or "").replace("24小时榜", "1日榜")
+
+
 def _payload_from_cached(cached: dict, source: str = "cache") -> dict:
     rows = _format_display_rows(cached.get("rows") or cached.get("tokens") or [])
     return {
@@ -141,10 +145,10 @@ def _payload_from_cached(cached: dict, source: str = "cache") -> dict:
         "tokenCount": cached.get("tokenCount") or len(rows),
         "columns": cached.get("columns") or (list(rows[0].keys()) if rows else []),
         "rows": rows,
-        "note": cached.get("note") or cached.get("limitation") or "",
+        "note": _relabel_board_text(cached.get("note") or cached.get("limitation") or ""),
         "mode": cached.get("mode") or "fast",
         "board": cached.get("board") or "all",
-        "boardLabel": cached.get("boardLabel") or "",
+        "boardLabel": _relabel_board_text(cached.get("boardLabel") or ""),
         "stats": cached.get("stats") or {},
     }
 
@@ -224,7 +228,7 @@ def api_settings_get():
         **s,
         "allLabel": f"总榜前{s['allLimit']}",
         "dayLabel": f"7日榜前{s['dayLimit']}",
-        "h24Label": f"24小时榜前{s['h24Limit']}",
+        "h24Label": f"1日榜前{s['h24Limit']}",
     }
 
 
@@ -241,7 +245,7 @@ def api_settings_save(payload: SettingsPayload):
         **s,
         "allLabel": f"总榜前{s['allLimit']}",
         "dayLabel": f"7日榜前{s['dayLimit']}",
-        "h24Label": f"24小时榜前{s['h24Limit']}",
+        "h24Label": f"1日榜前{s['h24Limit']}",
     }
 
 

@@ -75,7 +75,7 @@ BOARD_CONFIG = {
     "24h": {
         "boardKey": "24h",
         "limit": 50,
-        "label": "24小时榜",
+        "label": "1日榜",
         "lastResult": LAST_RESULT_24H_PATH,
         "jsonPath": JSON_24H_PATH,
         "csvPath": CSV_24H_PATH,
@@ -280,7 +280,7 @@ def resolve_board(board: str, limit: int | None = None) -> dict:
         short = "7日榜"
     elif key == "24h":
         default_limit = settings["h24Limit"]
-        short = "24小时榜"
+        short = "1日榜"
     else:
         default_limit = settings["allLimit"]
         short = "总榜"

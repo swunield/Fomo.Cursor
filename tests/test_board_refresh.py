@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 import unittest
 
-from fomo_pipeline import CACHE_FRESH_SEC, is_cache_fresh
+from fomo_pipeline import CACHE_FRESH_SEC, is_cache_fresh, resolve_board
 
 
 def _cached(*, age_sec: int, rows=None, board: str = "all") -> dict:
@@ -114,6 +114,13 @@ class CachedPayloadTests(unittest.TestCase):
         )
         self.assertEqual(body["rows"], [{"名称": "AAA"}])
         self.assertEqual(body.get("traders"), [])
+
+
+class BoardDisplayLabelTests(unittest.TestCase):
+    def test_24h_board_is_labeled_1d(self):
+        cfg = resolve_board("24h", limit=50)
+        self.assertEqual(cfg["shortLabel"], "1日榜")
+        self.assertEqual(cfg["label"], "1日榜前50")
 
 
 if __name__ == "__main__":

@@ -297,7 +297,7 @@ function boardLabel(board) {
   const b = normalizeBoard(board);
   const n = boardLimit(b);
   if (b === "7d") return `7日榜前${n}`;
-  if (b === "24h") return `24小时榜前${n}`;
+  if (b === "24h") return `1日榜前${n}`;
   return `总榜前${n}`;
 }
 
@@ -665,7 +665,7 @@ function renderTable(payload) {
     boardPayloads[board] = payload;
   }
   const allRows = payload.rows || [];
-  const label = payload.boardLabel || boardLabel(board);
+  const label = boardLabel(board);
   const filteredResult = filterRows(allRows);
   const rows = sortRows(filteredResult.rows);
   const filtered = filteredResult.filtered;
@@ -673,9 +673,9 @@ function renderTable(payload) {
   const cols = COLUMNS.slice();
 
   panelTitle.textContent = label;
-  panelNote.textContent =
-    payload.note ||
-    `${label}：榜单与持仓均来自 FOMO API（需登录）。`;
+  panelNote.textContent = String(
+    payload.note || `${label}：榜单与持仓均来自 FOMO API（需登录）。`
+  ).replaceAll("24小时榜", "1日榜");
   updatedAt.textContent = `更新 ${formatTime(payload.updatedAt)}`;
   tokenCount.textContent = filtered ? `${rows.length}/${total} tokens` : `${payload.tokenCount || rows.length} tokens`;
   modeChip.textContent = board;

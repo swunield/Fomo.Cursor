@@ -28,7 +28,7 @@ description: >-
 
 - 总榜：`GET https://prod-api.fomo.family/v2/leaderboard`
 - 7 日：`GET https://prod-api.fomo.family/v2/leaderboard/7d`
-- 24 小时：`GET https://prod-api.fomo.family/v2/leaderboard/24h`
+- 1 日榜：`GET https://prod-api.fomo.family/v2/leaderboard/24h`
 
 记录：`rank`、`handle`、`name`、`pnl`、`id`（userId）
 
