@@ -28,8 +28,9 @@ CSV_COLUMNS = (
     "成交量",
     "天数",
     "24h涨跌",
-    "持仓市值",
     "持仓人数",
+    "持仓市值",
+    "持仓盈亏",
     "人均持仓市值",
     "创建时间",
     "最高持仓人",
@@ -574,6 +575,54 @@ def fmt_signed_km(value):
     return text
 
 
+def sum_holder_pnl_usd(holders) -> float | None:
+    vals = []
+    for h in holders or []:
+        v = h.get("pnlUsd") if isinstance(h, dict) else None
+        if v in (None, ""):
+            continue
+        try:
+            vals.append(float(v))
+        except (TypeError, ValueError):
+            continue
+    if not vals:
+        return None
+    return sum(vals)
+
+
+_HOLDER_PNL_RE = re.compile(
+    r"\S+\([^)]*\)\s+([+\-][\d.]+[KMB]?(?:\([+\-]?\d+(?:\.\d+)?%\))?)",
+    re.I,
+)
+
+
+def sum_pnl_from_holder_text(value) -> float | None:
+    if value in (None, ""):
+        return None
+    if isinstance(value, list):
+        lines = [str(x).strip() for x in value if str(x).strip()]
+    else:
+        text = str(value).strip()
+        lines = [ln.strip() for ln in text.splitlines() if ln.strip()] or ([text] if text else [])
+    vals = []
+    for line in lines:
+        m = _HOLDER_PNL_RE.search(line)
+        if not m:
+            continue
+        n = parse_number(m.group(1))
+        if n is not None:
+            vals.append(n)
+    if not vals:
+        return None
+    return sum(vals)
+
+
+def fmt_holding_pnl(value) -> str:
+    if value in (None, ""):
+        return ""
+    return fmt_signed_km(value) or ""
+
+
 def fmt_pnl_with_pct(pnl_usd, pnl_pct) -> str:
     """Format open PnL as '+1.2M(+23.45%)' / '-500K(-12.30%)'."""
     if pnl_usd is None or pnl_usd == "":
@@ -837,6 +886,12 @@ def normalize_row_display(row, now=None):
     if "创建时间" in row:
         row["创建时间"] = fmt_created_at_local(created_raw)
     row["天数"] = fmt_token_age_days(created_raw, now=now)
+    if row.get("持仓盈亏") in (None, ""):
+        filled = sum_pnl_from_holder_text(row.get("持仓明细") or row.get("所有持仓人"))
+        if filled is not None:
+            row["持仓盈亏"] = filled
+    if row.get("持仓盈亏") not in (None, ""):
+        row["持仓盈亏"] = fmt_holding_pnl(row.get("持仓盈亏"))
     return row
 
 

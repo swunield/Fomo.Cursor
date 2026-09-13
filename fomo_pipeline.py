@@ -25,6 +25,7 @@ from update_token_marketcap import (
     normalize_row_display,
     ordered_fieldnames,
     save_cache,
+    sum_holder_pnl_usd,
     write_csv_rows,
     write_markdown,
 )
@@ -670,8 +671,9 @@ def aggregate_rows(
             "市值": current_mcap if current_mcap else "",
             "成交量": volume24 if volume24 else "",
             "24h涨跌": change24 if change24 not in (None, "") else "",
-            "持仓市值": total,
             "持仓人数": count,
+            "持仓市值": total,
+            "持仓盈亏": sum_holder_pnl_usd(holders),
             "人均持仓市值": avg,
             "创建时间": created_at or "",
             "最高持仓人": f"{hi['rank']}.{hi['name']}",

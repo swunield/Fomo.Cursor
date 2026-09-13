@@ -970,6 +970,8 @@ td.name-cell {
     font-size: 13px;
     color: #d7e8c8;
   }
+  .token-card-item dd.chg-up { color: var(--chg-up); font-weight: 600; }
+  .token-card-item dd.chg-down { color: var(--chg-down); font-weight: 600; }
   .token-card-holders {
     margin: 10px 0 0;
     color: var(--muted);

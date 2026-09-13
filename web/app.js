@@ -4,8 +4,9 @@ const COLUMNS = [
   "成交量",
   "天数",
   "24h涨跌",
-  "持仓市值",
   "持仓人数",
+  "持仓市值",
+  "持仓盈亏",
   "人均持仓市值",
   "创建时间",
   "最高持仓人",
@@ -35,8 +36,9 @@ const NUM_COLS = new Set([
   "成交量",
   "天数",
   "24h涨跌",
-  "持仓市值",
   "持仓人数",
+  "持仓市值",
+  "持仓盈亏",
   "人均持仓市值",
   "最高持仓市值",
   "最低持仓市值",
@@ -714,7 +716,7 @@ function renderTable(payload) {
           if (c === "天数") val = fmtAgeDays(row["创建时间"]) || val;
           let cls = "";
           if (NUM_COLS.has(c)) cls = "num";
-          if (c === "24h涨跌") {
+          if (c === "24h涨跌" || c === "持仓盈亏") {
             const n = parseNumber(val);
             cls = "num chg";
             if (n != null && n > 0) cls += " chg-up";
@@ -770,8 +772,9 @@ function renderCards(rows) {
           <div class="token-card-item"><dt>市值</dt><dd>${escapeHtml(String(row["市值"] ?? "—"))}</dd></div>
           <div class="token-card-item"><dt>成交量</dt><dd>${escapeHtml(String(row["成交量"] ?? "—"))}</dd></div>
           <div class="token-card-item"><dt>天数</dt><dd>${escapeHtml(fmtAgeDays(row["创建时间"]) || "—")}</dd></div>
-          <div class="token-card-item"><dt>持仓市值</dt><dd>${escapeHtml(String(row["持仓市值"] ?? "—"))}</dd></div>
           <div class="token-card-item"><dt>持仓人数</dt><dd>${escapeHtml(String(row["持仓人数"] ?? "—"))}</dd></div>
+          <div class="token-card-item"><dt>持仓市值</dt><dd>${escapeHtml(String(row["持仓市值"] ?? "—"))}</dd></div>
+          <div class="token-card-item"><dt>持仓盈亏</dt><dd class="num chg ${chgClass(row["持仓盈亏"])}">${escapeHtml(String(row["持仓盈亏"] ?? "—"))}</dd></div>
         </dl>
         <p class="token-card-holders">${escapeHtml(holdersTableText(row["所有持仓人"]))}</p>
         <p class="token-card-meta">${escapeHtml(String(row["发射平台"] ?? ""))} · ${escapeHtml(shortenTime(row["创建时间"]))}</p>
@@ -889,6 +892,10 @@ function showRowTip(row, tr, clientX, clientY) {
     row["持仓市值"] != null && String(row["持仓市值"]).trim() !== ""
       ? String(row["持仓市值"]).trim()
       : "—";
+  const holdPnl =
+    row["持仓盈亏"] != null && String(row["持仓盈亏"]).trim() !== ""
+      ? String(row["持仓盈亏"]).trim()
+      : "";
   const holderLines = holderTipLines(row);
 
   tbody.querySelectorAll("tr.tip-active").forEach((el) => el.classList.remove("tip-active"));
@@ -905,7 +912,11 @@ function showRowTip(row, tr, clientX, clientY) {
     <div class="row-tip-line"><span class="row-tip-label">平台</span>${escapeHtml(String(platform))}</div>
     <div class="row-tip-line"><span class="row-tip-label">创建时间</span>${escapeHtml(String(createdText))}</div>
     <div class="row-tip-line">
-      <span class="row-tip-label">持仓</span>${escapeHtml(`${holderCount}人 · ${holdMcap}`)}
+      <span class="row-tip-label">持仓</span>${escapeHtml(`${holderCount}人 · ${holdMcap}`)}${
+        holdPnl
+          ? ` · <span class="num chg ${chgClass(holdPnl)}">${escapeHtml(holdPnl)}</span>`
+          : ""
+      }
       <div class="row-tip-holders">${holdersHtml}</div>
     </div>
   `;

@@ -98,8 +98,10 @@ def _run_job(mode: str, board: str, limit: int | None = None) -> None:
 def _format_display_rows(rows):
     from update_token_marketcap import (
         fmt_created_at_local,
+        fmt_holding_pnl,
         fmt_holding_with_mcap_pct,
         fmt_token_age_days,
+        sum_pnl_from_holder_text,
     )
 
     out = []
@@ -116,6 +118,14 @@ def _format_display_rows(rows):
             copied["持仓市值"] = fmt_holding_with_mcap_pct(
                 copied.get("持仓市值"), copied.get("市值")
             )
+        if copied.get("持仓盈亏") in (None, ""):
+            filled = sum_pnl_from_holder_text(
+                copied.get("持仓明细") or copied.get("所有持仓人")
+            )
+            if filled is not None:
+                copied["持仓盈亏"] = fmt_holding_pnl(filled)
+        elif copied.get("持仓盈亏") not in (None, ""):
+            copied["持仓盈亏"] = fmt_holding_pnl(copied.get("持仓盈亏"))
         out.append(copied)
     return out
 
