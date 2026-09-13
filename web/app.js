@@ -906,6 +906,8 @@ function showRowTip(row, tr, clientX, clientY) {
   const holdersHtml = holderLines.length
     ? `<div class="row-tip-holder-grid">${holderLines.map(renderHolderTipRow).join("")}</div>`
     : `<div class="row-tip-holder">—</div>`;
+  const holdersClass =
+    holderLines.length > 10 ? "row-tip-holders is-scrollable-y" : "row-tip-holders";
 
   rowTip.innerHTML = `
     <div class="row-tip-line row-tip-name">${escapeHtml(String(name))}</div>
@@ -917,8 +919,9 @@ function showRowTip(row, tr, clientX, clientY) {
           ? ` · <span class="num chg ${chgClass(holdPnl)}">${escapeHtml(holdPnl)}</span>`
           : ""
       }
-      <div class="row-tip-holders">${holdersHtml}</div>
+      <div class="${holdersClass}">${holdersHtml}</div>
     </div>
+    <button type="button" class="row-tip-close">关闭</button>
   `;
   positionRowTip(clientX, clientY);
 }
@@ -1634,6 +1637,18 @@ document.addEventListener("click", (e) => {
   }
   hideRowTip();
 });
+
+rowTip.addEventListener("click", (e) => {
+  if (!e.target.closest(".row-tip-close")) return;
+  e.preventDefault();
+  e.stopPropagation();
+  hideRowTip();
+});
+
+rowTip.addEventListener("wheel", (e) => {
+  if (!e.target.closest(".row-tip-holders")) return;
+  e.stopPropagation();
+}, { passive: true });
 
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {

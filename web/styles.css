@@ -649,6 +649,7 @@ tbody tr.tip-active td {
 .row-tip-line {
   display: block;
   word-break: break-word;
+  min-width: 0;
 }
 
 .row-tip-line + .row-tip-line {
@@ -671,16 +672,46 @@ tbody tr.tip-active td {
 }
 
 .row-tip-holders {
+  --tip-holder-visible: 10;
+  --tip-holder-row-h: 1.55em;
+  --tip-holder-row-gap: 0.3em;
   margin-top: 4px;
   color: #c5d9b8;
+  min-width: 0;
+  width: 100%;
+  max-height: calc(
+    var(--tip-holder-row-h) * var(--tip-holder-visible)
+    + var(--tip-holder-row-gap) * (var(--tip-holder-visible) - 1)
+  );
   overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-x pan-y;
+  scrollbar-width: thin;
+  scrollbar-color: #4a5e4c transparent;
+}
+
+.row-tip-holders.is-scrollable-y {
+  overflow-y: auto;
+}
+
+.row-tip-holders::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.row-tip-holders::-webkit-scrollbar-thumb {
+  background: #4a5e4c;
+  border-radius: 8px;
 }
 
 .row-tip-holder-grid {
   display: grid;
   grid-template-columns: max-content max-content max-content max-content max-content;
   column-gap: 1.25em;
-  row-gap: 0.3em;
+  row-gap: var(--tip-holder-row-gap, 0.3em);
+  grid-auto-rows: var(--tip-holder-row-h, 1.55em);
   justify-items: start;
   align-items: start;
 }
@@ -702,6 +733,28 @@ tbody tr.tip-active td {
 .row-tip-holder-grid .tip-pnl.chg-up { color: var(--chg-up); font-weight: 600; }
 .row-tip-holder-grid .tip-pnl.chg-down { color: var(--chg-down); font-weight: 600; }
 .row-tip-holder-grid .tip-pnl.chg-flat { color: var(--muted); }
+
+.row-tip-close {
+  display: block;
+  width: 100%;
+  margin-top: 10px;
+  appearance: none;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  padding: 6px 10px;
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.row-tip-close:hover,
+.row-tip-close:focus-visible {
+  color: var(--text);
+  border-color: #5a7a3a;
+  background: var(--accent-dim);
+  outline: none;
+}
 
 @keyframes tipIn {
   from { opacity: 0; transform: translateY(4px); }
@@ -991,7 +1044,8 @@ td.name-cell {
     left: 10px !important;
     right: 10px;
     width: auto;
-    max-width: none;
+    max-width: calc(100vw - 20px);
+    overflow: hidden;
     bottom: 10px;
     top: auto !important;
   }
