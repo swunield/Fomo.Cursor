@@ -11,7 +11,21 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from fomo_auth import auth_status, clear_auth, save_auth, test_auth
+from fomo_auth import (
+    auth_status,
+    clear_auth,
+    fetch_trade,
+    get_access_token,
+    load_token_meta_cache,
+    save_auth,
+    test_auth,
+)
+from fomo_token_chart import (
+    circulating_supply,
+    load_token_trades,
+    normalize_token_addr,
+    refresh_token_chart,
+)
 from fomo_google_login import login_status, request_cancel, start_google_login
 from fomo_oauth import complete_browser_google_oauth, parse_privy_callback, start_browser_google_oauth
 from fomo_pipeline import (
@@ -38,6 +52,8 @@ _job: dict[str, Any] = {
     "mode": None,
     "board": "all",
 }
+_chart_lock = threading.Lock()
+_chart_jobs: dict[str, dict[str, Any]] = {}
 
 
 class AuthPayload(BaseModel):
@@ -64,6 +80,19 @@ class SettingsPayload(BaseModel):
     dayLimit: int | None = Field(default=None, description="7日榜人数")
     h24Limit: int | None = Field(default=None, description="1日榜人数")
     refreshMinutes: int | None = Field(default=None, description="自动刷新间隔（分钟）")
+
+
+class TokenChartHolder(BaseModel):
+    uid: str = ""
+    handle: str = ""
+    name: str = ""
+    tradeId: str = ""
+    tradeUpdatedAt: str | None = None
+
+
+class TokenChartRefreshPayload(BaseModel):
+    addr: str
+    holders: list[TokenChartHolder] = []
 
 
 def _normalize_board(board: str | None) -> str:
@@ -435,6 +464,134 @@ def fomo_result(board: str = Query(default="all")):
         result = dict(_job["result"])
         result["rows"] = _format_display_rows(result.get("rows") or [])
         return {"ok": True, "source": "live", **result}
+
+
+def _safe_chart_addr(addr: str, *, required: bool = False) -> str:
+    raw = (addr or "").strip()
+    if not raw:
+        if required:
+            raise HTTPException(status_code=400, detail="缺少合约地址")
+        return ""
+    try:
+        return normalize_token_addr(raw)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="非法合约地址")
+
+
+def _chart_circulating(addr: str) -> float:
+    meta = load_token_meta_cache()
+    try:
+        key = normalize_token_addr(addr)
+    except ValueError:
+        return 0.0
+    entry = meta.get(key)
+    if not isinstance(entry, dict):
+        entry = meta.get(addr)
+    if not isinstance(entry, dict):
+        for cache_key, value in meta.items():
+            if not isinstance(value, dict):
+                continue
+            try:
+                same = normalize_token_addr(str(cache_key)) == key
+            except ValueError:
+                same = False
+            if same:
+                entry = value
+                break
+    if not isinstance(entry, dict):
+        return 0.0
+    return circulating_supply(
+        float(entry.get("marketCap") or 0),
+        float(entry.get("priceUsd") or 0),
+    )
+
+
+def _set_chart_progress(key: str, fetched: int, total: int) -> None:
+    with _chart_lock:
+        job = _chart_jobs.setdefault(
+            key, {"status": "running", "fetched": 0, "total": 0, "error": None}
+        )
+        job["fetched"] = fetched
+        job["total"] = total
+
+
+def _run_chart_refresh(addr: str, holders: list[dict], circulating: float, token: str) -> None:
+    key = normalize_token_addr(addr)
+    try:
+        cache = refresh_token_chart(
+            addr,
+            holders,
+            fetch_fn=lambda trade_id: fetch_trade(trade_id, token=token),
+            circulating=circulating,
+            progress_fn=lambda fetched, total: _set_chart_progress(key, fetched, total),
+        )
+        failed = int((cache.get("stats") or {}).get("failed") or 0)
+        with _chart_lock:
+            job = _chart_jobs.get(key) or {}
+            job["status"] = "done"
+            job["error"] = f"{failed} 笔交易拉取失败" if failed else None
+            _chart_jobs[key] = job
+    except Exception as exc:
+        with _chart_lock:
+            job = _chart_jobs.get(key) or {}
+            job["status"] = "error"
+            job["error"] = str(exc)
+            _chart_jobs[key] = job
+
+
+@app.get("/api/fomo-top20/token-chart")
+def token_chart(addr: str = Query(default="")):
+    key = _safe_chart_addr(addr)
+    cache = load_token_trades(addr) if key else {"series": [], "lastFetchedAt": None, "stats": {}}
+    with _chart_lock:
+        job = dict(_chart_jobs.get(key) or {})
+    stats = cache.get("stats") or {}
+    failed = int(stats.get("failed") or 0)
+    body: dict[str, Any] = {
+        "ok": True,
+        "addr": addr,
+        "lastFetchedAt": cache.get("lastFetchedAt"),
+        "series": cache.get("series") or [],
+        "running": job.get("status") == "running",
+        "progress": {
+            "fetched": int(job.get("fetched") or 0),
+            "total": int(job.get("total") or 0),
+        },
+    }
+    if int(stats.get("missingTradeIds") or 0) > 0:
+        body["warning"] = "请先刷新榜单"
+    if job.get("status") == "error" and job.get("error"):
+        body["error"] = str(job["error"])
+    elif failed > 0:
+        body["error"] = str(job.get("error") or f"{failed} 笔交易拉取失败")
+    return body
+
+
+@app.post("/api/fomo-top20/token-chart/refresh")
+def token_chart_refresh(payload: TokenChartRefreshPayload):
+    if not get_access_token():
+        raise HTTPException(status_code=401, detail="未登录")
+    addr = _safe_chart_addr(payload.addr or "", required=True)
+    key = addr
+    holders = [item.model_dump() for item in payload.holders]
+    with _chart_lock:
+        job = _chart_jobs.get(key) or {}
+        if job.get("status") == "running":
+            return {"ok": False, "running": True}
+        _chart_jobs[key] = {
+            "status": "running",
+            "fetched": 0,
+            "total": 0,
+            "error": None,
+        }
+    token = get_access_token() or ""
+    circulating = _chart_circulating(addr)
+    threading.Thread(
+        target=_run_chart_refresh,
+        args=(addr, holders, circulating, token),
+        daemon=True,
+    ).start()
+    return {"ok": True, "started": True, "running": True}
 
 
 @app.get("/")

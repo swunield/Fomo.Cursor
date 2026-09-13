@@ -756,6 +756,65 @@ tbody tr.tip-active td {
   outline: none;
 }
 
+.row-tip-chart {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--line);
+}
+
+.row-tip-chart-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+
+.row-tip-chart-refresh {
+  flex: 0 0 auto;
+  border: 1px solid #3d5230;
+  background: #162016;
+  color: var(--accent);
+  padding: 4px 10px;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, opacity 0.15s ease;
+}
+
+.row-tip-chart-refresh:hover:not(:disabled) {
+  background: #1c2a1c;
+  border-color: var(--accent);
+}
+
+.row-tip-chart-refresh:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.row-tip-chart-canvas {
+  width: 100%;
+  height: 156px;
+  display: block;
+  background: #0d120f;
+  border-radius: 8px;
+}
+
+.row-tip-chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  margin-top: 6px;
+  font-size: 10px;
+}
+
+.row-tip-chart-status {
+  color: var(--muted);
+  font-size: 11px;
+  margin-top: 4px;
+}
+
 @keyframes tipIn {
   from { opacity: 0; transform: translateY(4px); }
   to { opacity: 1; transform: translateY(0); }

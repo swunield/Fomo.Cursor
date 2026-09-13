@@ -345,6 +345,20 @@ def fomo_get(path: str, token: str | None = None, timeout: int = 40, _retried: b
         return {"error": str(exc), "statusCode": 0}
 
 
+def fetch_trade(trade_id: str, token: str | None = None) -> dict:
+    trade_id = (trade_id or "").strip()
+    if not trade_id:
+        raise RuntimeError("empty trade id")
+    data = fomo_get(f"/trades/{trade_id}", token=token)
+    status = data.get("statusCode")
+    if data.get("error") or status in (401, 403, 430, 431) or not data.get("success", True):
+        raise RuntimeError(data.get("error") or data.get("message") or f"trade {trade_id} failed")
+    obj = data.get("responseObject")
+    if not isinstance(obj, dict):
+        raise RuntimeError(f"unexpected trade shape for {trade_id}")
+    return obj
+
+
 def fetch_user_by_handle(handle: str, token: str | None = None) -> dict:
     """Resolve FOMO user via GET /v2/users/userHandle/{handle}.
 
@@ -582,6 +596,7 @@ def parse_balance_item(item: dict) -> dict | None:
         "pnlUsd": pnl_usd,
         "pnlPct": pnl_pct,
         "launchpadIconUrl": launchpad.get("launchpadIconUrl") or "",
+        "tradeId": str(trade.get("id") or "").strip(),
     }
 
 

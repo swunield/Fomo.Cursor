@@ -516,6 +516,8 @@ def collect_open_holdings(
                         "name": trader["name"] or handle,
                         "handle": handle,
                         "uid": user_id,
+                        "tradeId": h.get("tradeId") or "",
+                        "amount": float(h.get("amount") or 0),
                         "value": value,
                         "tokenAddress": addr,
                         "networkId": h.get("networkId"),
@@ -738,6 +740,20 @@ def aggregate_rows(
             "发射平台": platform,
             "合约地址": addr,
             "debotChain": debot_chain(addr, platform, network_id=network_id),
+            "holders": [
+                {
+                    "rank": h["rank"],
+                    "name": h["name"],
+                    "handle": h.get("handle") or "",
+                    "uid": h.get("uid") or "",
+                    "tradeId": h.get("tradeId") or "",
+                    "tradeUpdatedAt": h.get("positionUpdatedAt") or "",
+                    "amount": float(h.get("amount") or 0),
+                    "value": float(h.get("value") or 0),
+                    "pnlUsd": h.get("pnlUsd"),
+                }
+                for h in sorted(holders, key=lambda x: float(x.get("value") or 0), reverse=True)
+            ],
         }
         normalize_row_display(row)
         rows.append(row)

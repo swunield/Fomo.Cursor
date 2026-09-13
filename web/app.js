@@ -116,6 +116,7 @@ let lastPayload = null;
 const boardPayloads = Object.create(null);
 let boardSelectGen = 0;
 let tipRowIndex = -1;
+let tipChartGen = 0;
 let sortState = { col: null, dir: null }; // dir: 'asc' | 'desc'
 let refreshTargetBoard = null;
 let refreshSilent = false;
@@ -857,6 +858,7 @@ function renderCards(rows) {
 }
 
 function hideRowTip() {
+  tipChartGen += 1;
   tipRowIndex = -1;
   rowTip.classList.add("hidden");
   rowTip.innerHTML = "";
@@ -1046,9 +1048,40 @@ function mergeHolderLines(a, b) {
   });
 }
 
+function holderChartId(h) {
+  const uid = String(h?.uid || "").trim().toLowerCase();
+  if (uid) return uid;
+  return String(h?.handle || "").trim().toLowerCase();
+}
+
+function rememberTokenHolders(store, key, holders, t) {
+  let map = store.get(key);
+  if (!map) {
+    map = new Map();
+    store.set(key, map);
+  }
+  for (const h of Array.isArray(holders) ? holders : []) {
+    const id = holderChartId(h);
+    if (!id) continue;
+    const prev = map.get(id);
+    if (!prev || t > prev.time) {
+      const holder = prev ? { ...prev.holder, ...h } : { ...h };
+      const incoming = h?.tradeUpdatedAt;
+      const previous = prev?.holder?.tradeUpdatedAt;
+      if (incoming != null && String(incoming).trim() !== "") {
+        holder.tradeUpdatedAt = incoming;
+      } else if (previous != null && String(previous).trim() !== "") {
+        holder.tradeUpdatedAt = previous;
+      }
+      map.set(id, { time: t, holder });
+    }
+  }
+}
+
 function cloneTokenRow(row) {
   const out = { ...row };
   out["持仓明细"] = holderTipLines(row).slice();
+  out.holders = Array.isArray(row.holders) ? row.holders.map((h) => ({ ...h })) : [];
   return out;
 }
 
@@ -1089,6 +1122,7 @@ function mergeSummaryPayloads(payloads) {
   const holderHoldings = new Map();
   const holderRanks = new Map();
   const tokenMeta = new Map();
+  const tokenHolders = new Map();
   const marketFields = ["名称", "市值", "成交量", "24h涨跌", "创建时间", "发射平台", "debotChain"];
   for (const payload of payloads || []) {
     const t = payloadQueryMs(payload);
@@ -1098,6 +1132,7 @@ function mergeSummaryPayloads(payloads) {
       const addr = String(row["合约地址"] || "").trim();
       if (!addr) continue;
       const key = addr.toLowerCase();
+      rememberTokenHolders(tokenHolders, key, row.holders, t);
       const prevMeta = tokenMeta.get(key);
       if (!prevMeta) {
         tokenMeta.set(key, { time: t, row: cloneTokenRow(row) });
@@ -1138,6 +1173,10 @@ function mergeSummaryPayloads(payloads) {
     if (!lines.length) continue;
     row["持仓明细"] = lines;
     row["所有持仓人"] = lines.join("\n");
+    const mergedHolders = tokenHolders.get(key);
+    row.holders = mergedHolders
+      ? [...mergedHolders.values()].map((x) => ({ ...x.holder }))
+      : row.holders || [];
     rows.push(finalizeMergedRow(row));
   }
   rows.sort((a, b) => (parseNumber(b["持仓市值"]) || 0) - (parseNumber(a["持仓市值"]) || 0));
@@ -1162,6 +1201,7 @@ function mergeSummaryPayloads(payloads) {
 }
 
 function showRowTip(row, tr, clientX, clientY) {
+  tipChartGen += 1;
   const name = row["名称"] || "—";
   const platform = row["发射平台"] || "—";
   const createdAt = shortenTime(row["创建时间"]) || "—";
@@ -1191,6 +1231,7 @@ function showRowTip(row, tr, clientX, clientY) {
     : `<div class="row-tip-holder">—</div>`;
   const holdersClass =
     holderLines.length > 10 ? "row-tip-holders is-scrollable-y" : "row-tip-holders";
+  const addr = String(row["合约地址"] || "").trim();
 
   rowTip.innerHTML = `
     <div class="row-tip-line row-tip-name">${escapeHtml(String(name))}</div>
@@ -1204,9 +1245,19 @@ function showRowTip(row, tr, clientX, clientY) {
       }
       <div class="${holdersClass}">${holdersHtml}</div>
     </div>
+    <div class="row-tip-chart" data-addr="${escapeHtml(addr)}">
+      <div class="row-tip-chart-head">
+        <span>持仓轨迹</span>
+        <button type="button" class="row-tip-chart-refresh" data-addr="${escapeHtml(addr)}">刷新</button>
+      </div>
+      <canvas class="row-tip-chart-canvas" width="640" height="180"></canvas>
+      <div class="row-tip-chart-legend"></div>
+      <div class="row-tip-chart-status">无缓存</div>
+    </div>
     <button type="button" class="row-tip-close">关闭</button>
   `;
   positionRowTip(clientX, clientY);
+  bindTipChart(row);
 }
 
 function escapeHtml(s) {
@@ -1215,6 +1266,275 @@ function escapeHtml(s) {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
+}
+
+const TOKEN_CHART_COLORS = {
+  mcap: "#c8f542",
+  holders: "#6ec8ff",
+  amount: "#ffb347",
+  holdMcap: "#d48cff",
+  pnl: "#ff6b6b",
+};
+
+const TOKEN_CHART_KEYS = ["mcap", "holders", "amount", "holdMcap", "pnl"];
+const TOKEN_CHART_LABELS = {
+  mcap: "市值",
+  holders: "人数",
+  amount: "数量",
+  holdMcap: "持仓市值",
+  pnl: "盈亏",
+};
+
+function chartAxisTimeLabel(val) {
+  const full = shortenTime(val);
+  const m = String(full).match(/^(\d{4})-(\d{2}-\d{2}) (\d{2}:\d{2})/);
+  return m ? `${m[2]} ${m[3]}` : full;
+}
+
+function drawTokenChart(canvas, series) {
+  if (!canvas) return;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
+  const w = canvas.width;
+  const h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+  ctx.fillStyle = "#0d120f";
+  ctx.fillRect(0, 0, w, h);
+  const left = 10;
+  const right = w - 10;
+  const top = 8;
+  const bottom = h - 22;
+  ctx.strokeStyle = "#2a3a2c";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(left, top);
+  ctx.lineTo(left, bottom);
+  ctx.lineTo(right, bottom);
+  ctx.stroke();
+  const points = Array.isArray(series) ? series : [];
+  const times = points.map((p) => createdAtMs(p?.t));
+  const timed = times.every((t) => t > 0);
+  const tMin = timed ? Math.min(...times) : 0;
+  const tMax = timed ? Math.max(...times) : 0;
+  const xAt = (i) => {
+    if (points.length < 2) return left;
+    if (timed && tMax > tMin) {
+      return left + ((right - left) * (times[i] - tMin)) / (tMax - tMin);
+    }
+    return left + ((right - left) * i) / (points.length - 1);
+  };
+  if (points.length) {
+    const tickIdx =
+      points.length === 1 ? [0] : points.length === 2 ? [0, 1] : [0, Math.floor((points.length - 1) / 2), points.length - 1];
+    ctx.fillStyle = "#9aab94";
+    ctx.font = "10px ui-monospace, 'IBM Plex Mono', monospace";
+    tickIdx.forEach((i, n) => {
+      const label = chartAxisTimeLabel(points[i]?.t);
+      if (!label) return;
+      const x = xAt(i);
+      ctx.textAlign = n === 0 ? "left" : n === tickIdx.length - 1 ? "right" : "center";
+      ctx.fillText(label, x, h - 6);
+    });
+  }
+  if (points.length < 2) return;
+  for (const key of TOKEN_CHART_KEYS) {
+    let min = Infinity;
+    let max = -Infinity;
+    for (const p of points) {
+      const v = Number(p[key]);
+      if (!Number.isFinite(v)) continue;
+      if (v < min) min = v;
+      if (v > max) max = v;
+    }
+    if (!Number.isFinite(min) || !Number.isFinite(max)) continue;
+    if (min === max) {
+      min -= 1;
+      max += 1;
+    }
+    ctx.strokeStyle = TOKEN_CHART_COLORS[key];
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    let started = false;
+    points.forEach((p, i) => {
+      const v = Number(p[key]);
+      if (!Number.isFinite(v)) return;
+      const y = bottom - ((v - min) / (max - min)) * (bottom - top);
+      const x = xAt(i);
+      if (!started) {
+        ctx.moveTo(x, y);
+        started = true;
+      } else {
+        ctx.lineTo(x, y);
+      }
+    });
+    if (started) ctx.stroke();
+  }
+}
+
+function formatChartLegend(series) {
+  const points = Array.isArray(series) ? series : [];
+  const last = points.length ? points[points.length - 1] : null;
+  return TOKEN_CHART_KEYS.map((key) => {
+    const color = TOKEN_CHART_COLORS[key];
+    const label = TOKEN_CHART_LABELS[key];
+    let val = "—";
+    if (last) {
+      val = key === "pnl" ? fmtSignedKm(last[key]) : fmtKm(last[key]);
+    }
+    return `<span style="color:${color}">${label} ${val}</span>`;
+  }).join("");
+}
+
+function tipChartEls(row) {
+  const box = rowTip?.querySelector(".row-tip-chart");
+  if (!box) return {};
+  return {
+    box,
+    canvas: box.querySelector(".row-tip-chart-canvas"),
+    legend: box.querySelector(".row-tip-chart-legend"),
+    status: box.querySelector(".row-tip-chart-status"),
+    button: box.querySelector(".row-tip-chart-refresh"),
+  };
+}
+
+function tipChartMissingHint(data) {
+  const missing = Number(data?.missingTradeIds || data?.stats?.missingTradeIds || 0);
+  if (missing > 0 || data?.warning) return data?.warning || "请先刷新榜单";
+  return "";
+}
+
+function tipChartStatusText(data, series) {
+  const points = Array.isArray(series) ? series : [];
+  const parts = [];
+  if (data?.running) {
+    const fetched = Number(data?.progress?.fetched || 0);
+    const total = Number(data?.progress?.total || 0);
+    parts.push(`已拉 ${fetched}/${total}`);
+  } else if (!points.length) {
+    parts.push("无缓存");
+  } else if (data?.lastFetchedAt) {
+    parts.push(String(data.lastFetchedAt));
+  }
+  const hint = tipChartMissingHint(data);
+  if (hint && !parts.includes(hint)) parts.push(hint);
+  if (data?.error) parts.push(String(data.error));
+  return parts.filter(Boolean).join(" · ") || "无缓存";
+}
+
+function applyTipChartData(row, data, fallbackSeries) {
+  const els = tipChartEls(row);
+  const fallback = fallbackSeries || [];
+  let series = Array.isArray(data?.series) ? data.series : fallback;
+  if (data?.error && (!series || !series.length) && fallback.length) series = fallback;
+  if (els.box) els.box._series = series;
+  if (els.canvas) drawTokenChart(els.canvas, series);
+  if (els.legend) els.legend.innerHTML = formatChartLegend(series);
+  if (els.status) els.status.textContent = tipChartStatusText(data, series);
+  return series;
+}
+
+async function fetchTipTokenChart(addr) {
+  const url = `/api/fomo-top20/token-chart?addr=${encodeURIComponent(addr)}`;
+  const { data } = await fetchJson(url, { retries: 0 });
+  return data || {};
+}
+
+async function pollTipTokenChart(row, gen) {
+  const addr = String(row?.["合约地址"] || "").trim();
+  while (gen === tipChartGen) {
+    let data = {};
+    try {
+      data = await fetchTipTokenChart(addr);
+    } catch (e) {
+      if (gen !== tipChartGen) return;
+      const els = tipChartEls(row);
+      if (els.status) els.status.textContent = networkErrorMessage(e) || "请求失败";
+      if (els.canvas) drawTokenChart(els.canvas, els.box?._series || []);
+      return data;
+    }
+    if (gen !== tipChartGen) return;
+    applyTipChartData(row, data, tipChartEls(row).box?._series);
+    if (!data.running) return data;
+    await sleep(900);
+    if (gen !== tipChartGen) return;
+  }
+  return null;
+}
+
+async function refreshTipTokenChart(row) {
+  const gen = tipChartGen;
+  const addr = String(row?.["合约地址"] || "").trim();
+  const els = tipChartEls(row);
+  const oldSeries = els.box?._series || [];
+  if (els.button) els.button.disabled = true;
+  try {
+    const { res, data } = await fetchJson("/api/fomo-top20/token-chart/refresh", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ addr, holders: row.holders || [] }),
+    });
+    if (gen !== tipChartGen) return;
+    const err = data?.error || data?.detail || (res && !res.ok ? `HTTP ${res.status}` : "");
+    if (err && !data?.started && !data?.running) {
+      if (els.status) els.status.textContent = String(err);
+      if (els.canvas) drawTokenChart(els.canvas, oldSeries);
+      if (els.legend) els.legend.innerHTML = formatChartLegend(oldSeries);
+      return;
+    }
+    if (data?.started || data?.running) {
+      applyTipChartData(row, data, oldSeries);
+      await pollTipTokenChart(row, gen);
+    } else if (data) {
+      applyTipChartData(row, data, oldSeries);
+    }
+  } catch (e) {
+    if (gen !== tipChartGen) return;
+    if (els.status) els.status.textContent = networkErrorMessage(e) || "刷新失败";
+    if (els.canvas) drawTokenChart(els.canvas, oldSeries);
+    if (els.legend) els.legend.innerHTML = formatChartLegend(oldSeries);
+  } finally {
+    if (gen === tipChartGen) {
+      const live = tipChartEls(row);
+      if (live.button) live.button.disabled = false;
+    }
+  }
+}
+
+function loadTipTokenChart(row) {
+  const gen = tipChartGen;
+  const addr = String(row?.["合约地址"] || "").trim();
+  if (!addr) {
+    const els = tipChartEls(row);
+    if (els.canvas) drawTokenChart(els.canvas, []);
+    if (els.status) els.status.textContent = "无缓存";
+    return;
+  }
+  (async () => {
+    try {
+      const data = await fetchTipTokenChart(addr);
+      if (gen !== tipChartGen) return;
+      applyTipChartData(row, data, []);
+      if (data.running) await pollTipTokenChart(row, gen);
+    } catch (e) {
+      if (gen !== tipChartGen) return;
+      const els = tipChartEls(row);
+      if (els.status) els.status.textContent = networkErrorMessage(e) || "请求失败";
+      if (els.canvas) drawTokenChart(els.canvas, []);
+    }
+  })();
+}
+
+function bindTipChart(row) {
+  const els = tipChartEls(row);
+  if (els.canvas) drawTokenChart(els.canvas, []);
+  if (els.button) {
+    els.button.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      refreshTipTokenChart(row);
+    });
+  }
+  loadTipTokenChart(row);
 }
 
 async function copyText(text) {

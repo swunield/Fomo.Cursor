@@ -222,4 +222,44 @@ assert(
   "总榜 rank comes from trader list even without 总榜 holdings"
 );
 
+const holdersOlder = {
+  board: "all",
+  generatedAt: "2026-09-13T01:00:00Z",
+  rows: [
+    {
+      名称: "EEE",
+      市值: "1.0M",
+      合约地址: "So1EEE",
+      持仓明细: ["1.Eve 100K(10.0%) +1K(+1%)"],
+      holders: [
+        {
+          uid: "u-eve",
+          handle: "eve",
+          name: "Eve",
+          tradeId: "t-eve",
+          tradeUpdatedAt: "2026-09-13T00:00:00Z",
+        },
+      ],
+    },
+  ],
+};
+const holdersNewer = {
+  board: "7d",
+  generatedAt: "2026-09-13T02:00:00Z",
+  rows: [
+    {
+      名称: "EEE",
+      市值: "1.0M",
+      合约地址: "So1EEE",
+      持仓明细: ["8.Eve 90K(9.00%) +500(+0.5%)"],
+      holders: [{ uid: "u-eve", handle: "eve", name: "Eve", tradeId: "t-eve" }],
+    },
+  ],
+};
+const mergedHolders = mergeSummaryPayloads([holdersOlder, holdersNewer]);
+const eee = mergedHolders.rows.find((r) => r["合约地址"] === "So1EEE");
+assert(eee, "EEE row");
+assert(eee.holders && eee.holders.length, "EEE holders copied");
+assertEqual(eee.holders[0].tradeUpdatedAt, "2026-09-13T00:00:00Z", "merge keeps tradeUpdatedAt");
+
 console.log("ok");

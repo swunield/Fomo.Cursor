@@ -16,12 +16,14 @@ DOMAIN = "fomo.niceshotgame.xyz"
 SKIP_DIRS = {
     ".git",
     ".cursor",
+    ".superpowers",
     ".playwright-fomo-chrome",
     ".playwright-debot-chrome",
     "__pycache__",
     ".venv",
     "tmp_fomo_js",
     ".tmp_fomo_js",
+    "fomo_token_trades",
 }
 SKIP_FILES = {
     "Server.conf",
