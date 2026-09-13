@@ -61,7 +61,8 @@ const boardSettings = { allLimit: 20, dayLimit: 50, h24Limit: 50, refreshMinutes
 const btnFast = document.getElementById("btn-top20");
 const btn7d = document.getElementById("btn-7d");
 const btn24h = document.getElementById("btn-24h");
-const navButtons = [btnFast, btn7d, btn24h].filter(Boolean);
+const btnSum = document.getElementById("btn-sum");
+const navButtons = [btnFast, btn7d, btn24h, btnSum].filter(Boolean);
 const jobStatus = document.getElementById("job-status");
 const panelTitle = document.getElementById("panel-title");
 const panelNote = document.getElementById("panel-note");
@@ -193,6 +194,24 @@ function setRefreshBusy(busy) {
   if (btnMobileRefresh) btnMobileRefresh.disabled = refreshBusy;
 }
 
+async function jobIsRunning() {
+  try {
+    const { data: st } = await fetchJson("/api/fomo-top20/status", { retries: 0 });
+    return st?.status === "running";
+  } catch {
+    return false;
+  }
+}
+
+async function unlockRefreshIfIdle() {
+  if (await jobIsRunning()) {
+    setRefreshBusy(true);
+    return false;
+  }
+  setRefreshBusy(false);
+  return true;
+}
+
 function showLoading(show, text = "正在拉取…") {
   // 保留 DOM，但榜单拉取改为顶部文字进度，不再用遮罩打断浏览
   if (loadingOverlay) loadingOverlay.classList.add("hidden");
@@ -280,9 +299,28 @@ function fmtAgeDays(createdAt, nowMs) {
   return days.toFixed(1);
 }
 
+const SOURCE_BOARDS = ["all", "7d", "24h"];
+
+function isSummaryBoard(board) {
+  return normalizeBoard(board) === "sum";
+}
+
+function isSourceBoard(board) {
+  const b = normalizeBoard(board);
+  return SOURCE_BOARDS.includes(b);
+}
+
+function cachePayloadUsable(data) {
+  if (!data || data.ok === false) return false;
+  if ((data.rows || data.tokens || []).length) return true;
+  if ((data.traderRanks || data.traders || []).length) return true;
+  return false;
+}
+
 function normalizeBoard(board) {
   if (board === "7d") return "7d";
   if (board === "24h") return "24h";
+  if (board === "sum" || board === "summary") return "sum";
   return "all";
 }
 
@@ -295,6 +333,7 @@ function boardLimit(board) {
 
 function boardLabel(board) {
   const b = normalizeBoard(board);
+  if (b === "sum") return "汇总";
   const n = boardLimit(b);
   if (b === "7d") return `7日榜前${n}`;
   if (b === "24h") return `1日榜前${n}`;
@@ -425,6 +464,40 @@ function parseNumber(value) {
   }
   const n = Number(text);
   return Number.isFinite(n) ? n * multiplier : null;
+}
+
+function fmtKm(value) {
+  const num = parseNumber(value);
+  if (num == null) return value == null || value === "" ? "" : String(value);
+  const sign = num < 0 ? "-" : "";
+  const n = Math.abs(num);
+  if (n >= 1_000_000) return `${sign}${(n / 1e6).toFixed(1)}M`;
+  if (n >= 1_000) return `${sign}${Math.round(n / 1e3)}K`;
+  return `${sign}${Math.round(n)}`;
+}
+
+function fmtSignedKm(value) {
+  const num = parseNumber(value);
+  if (num == null) return "";
+  const text = fmtKm(num);
+  if (num > 0 && text && !text.startsWith("+")) return `+${text}`;
+  return text;
+}
+
+function fmtHoldingWithMcapPct(holdingValue, marketCap) {
+  const holding = parseNumber(holdingValue);
+  if (holding == null) {
+    return holdingValue == null || holdingValue === "" ? "" : String(holdingValue);
+  }
+  const valueText = fmtKm(holding);
+  const mcap = parseNumber(marketCap);
+  if (!mcap || mcap <= 0) return `${valueText}(-)`;
+  const pct = (holding / mcap) * 100;
+  let pctText;
+  if (pct >= 10) pctText = `${pct.toFixed(1)}%`;
+  else if (pct >= 1) pctText = `${pct.toFixed(2)}%`;
+  else pctText = `${pct.toFixed(3)}%`;
+  return `${valueText}(${pctText})`;
 }
 
 function readFilterInputs() {
@@ -678,7 +751,7 @@ function renderTable(payload) {
   ).replaceAll("24小时榜", "1日榜");
   updatedAt.textContent = `更新 ${formatTime(payload.updatedAt)}`;
   tokenCount.textContent = filtered ? `${rows.length}/${total} tokens` : `${payload.tokenCount || rows.length} tokens`;
-  modeChip.textContent = board;
+  modeChip.textContent = isSummaryBoard(board) ? "汇总" : board;
   updateFilterSummary(rows.length, total, filtered);
   renderSortChips();
 
@@ -876,6 +949,216 @@ function renderHolderTipRow(line) {
     <span class="tip-col tip-dur">${escapeHtml(parts.dur)}</span>
     <span class="tip-col tip-upd">${escapeHtml(parts.upd)}</span>
   </div>`;
+}
+
+function holderIdentity(line) {
+  const who = parseHolderTipParts(line).who || String(line || "");
+  const name = String(who).replace(/^(\d+\.)+/, "").trim();
+  return name.toLowerCase() || String(line || "").trim();
+}
+
+function holderDisplayName(line) {
+  const who = parseHolderTipParts(line).who || String(line || "");
+  return String(who).replace(/^(\d+\.)+/, "").trim() || String(line || "").trim();
+}
+
+function holderSourceRank(line) {
+  const who = parseHolderTipParts(line).who || "";
+  const m = String(who).match(/^(\d+)\./);
+  return m ? Number(m[1]) || 0 : 0;
+}
+
+function emptyHolderRanks() {
+  return { all: 0, "7d": 0, "24h": 0 };
+}
+
+function rememberBoardRank(holderRanks, board, rank, ...labels) {
+  if (!isSourceBoard(board)) return;
+  const n = Number(rank) || 0;
+  if (n <= 0) return;
+  const ids = [
+    ...new Set(
+      labels
+        .map((s) => String(s || "").trim().toLowerCase())
+        .filter(Boolean)
+    ),
+  ];
+  if (!ids.length) return;
+  let rec = null;
+  for (const id of ids) {
+    if (holderRanks.has(id)) {
+      rec = holderRanks.get(id);
+      break;
+    }
+  }
+  if (!rec) rec = emptyHolderRanks();
+  rec[board] = n;
+  for (const id of ids) holderRanks.set(id, rec);
+}
+
+function applyPayloadTraderRanks(payload, holderRanks) {
+  const board = normalizeBoard(payload?.board);
+  const list = payload?.traderRanks || payload?.traders || [];
+  for (const trader of list) {
+    if (!trader || typeof trader !== "object") continue;
+    rememberBoardRank(holderRanks, board, trader.rank, trader.name, trader.handle);
+  }
+}
+
+function formatSummaryHolderWho(name, ranks) {
+  const r = ranks || emptyHolderRanks();
+  return `${r.all || 0}.${r["7d"] || 0}.${r["24h"] || 0}.${name}`;
+}
+
+function relabelSummaryHolderLine(line, ranks) {
+  const p = parseHolderTipParts(line);
+  const name = holderDisplayName(line);
+  const who = formatSummaryHolderWho(name, ranks);
+  const rest = [p.hold, p.pnl, p.dur, p.upd].filter(Boolean).join(" ");
+  return rest ? `${who} ${rest}` : who;
+}
+
+function payloadQueryMs(payload) {
+  const raw = payload?.generatedAt || payload?.updatedAt || "";
+  const ms = Date.parse(String(raw));
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+function mergeHolderLines(a, b) {
+  const map = new Map();
+  for (const line of [...(a || []), ...(b || [])]) {
+    const text = String(line || "").trim();
+    if (!text) continue;
+    const id = holderIdentity(text);
+    const prev = map.get(id);
+    if (!prev) {
+      map.set(id, text);
+      continue;
+    }
+    const va = parseNumber(parseHolderTipParts(prev).hold) || 0;
+    const vb = parseNumber(parseHolderTipParts(text).hold) || 0;
+    if (vb > va) map.set(id, text);
+  }
+  return [...map.values()].sort((x, y) => {
+    const na = parseNumber(parseHolderTipParts(x).hold) || 0;
+    const nb = parseNumber(parseHolderTipParts(y).hold) || 0;
+    return nb - na;
+  });
+}
+
+function cloneTokenRow(row) {
+  const out = { ...row };
+  out["持仓明细"] = holderTipLines(row).slice();
+  return out;
+}
+
+function finalizeMergedRow(row) {
+  const parsed = holderTipLines(row)
+    .map((line) => {
+      const p = parseHolderTipParts(line);
+      return {
+        line,
+        p,
+        hold: parseNumber(p.hold) || 0,
+        pnl: p.pnl ? parseNumber(p.pnl) : null,
+      };
+    })
+    .sort((a, b) => b.hold - a.hold);
+  const count = parsed.length;
+  const total = parsed.reduce((sum, x) => sum + x.hold, 0);
+  const pnlVals = parsed.map((x) => x.pnl).filter((n) => n != null);
+  const mcap = row["市值"];
+  row["持仓人数"] = count;
+  row["持仓市值"] = fmtHoldingWithMcapPct(total, mcap);
+  row["人均持仓市值"] = fmtKm(count ? total / count : 0);
+  row["持仓盈亏"] = pnlVals.length ? fmtSignedKm(pnlVals.reduce((a, b) => a + b, 0)) : "";
+  if (parsed.length) {
+    const hi = parsed[0];
+    const lo = parsed[parsed.length - 1];
+    row["最高持仓人"] = hi.p.who || "";
+    row["最高持仓市值"] = fmtHoldingWithMcapPct(hi.hold, mcap);
+    row["最低持仓人"] = lo.p.who || "";
+    row["最低持仓市值"] = fmtHoldingWithMcapPct(lo.hold, mcap);
+  }
+  row["所有持仓人"] = parsed.map((x) => x.line).join("\n");
+  row["持仓明细"] = parsed.map((x) => x.line);
+  return row;
+}
+
+function mergeSummaryPayloads(payloads) {
+  const holderHoldings = new Map();
+  const holderRanks = new Map();
+  const tokenMeta = new Map();
+  const marketFields = ["名称", "市值", "成交量", "24h涨跌", "创建时间", "发射平台", "debotChain"];
+  for (const payload of payloads || []) {
+    const t = payloadQueryMs(payload);
+    const board = normalizeBoard(payload?.board);
+    applyPayloadTraderRanks(payload, holderRanks);
+    for (const row of payload?.rows || []) {
+      const addr = String(row["合约地址"] || "").trim();
+      if (!addr) continue;
+      const key = addr.toLowerCase();
+      const prevMeta = tokenMeta.get(key);
+      if (!prevMeta) {
+        tokenMeta.set(key, { time: t, row: cloneTokenRow(row) });
+      } else if (t > prevMeta.time) {
+        const cloned = cloneTokenRow(row);
+        cloned["合约地址"] = prevMeta.row["合约地址"] || cloned["合约地址"];
+        tokenMeta.set(key, { time: t, row: cloned });
+      } else {
+        for (const field of marketFields) {
+          if (prevMeta.row[field] == null || prevMeta.row[field] === "") {
+            prevMeta.row[field] = row[field];
+          }
+        }
+      }
+      for (const line of holderTipLines(row)) {
+        const text = String(line || "").trim();
+        if (!text) continue;
+        const id = holderIdentity(text);
+        rememberBoardRank(holderRanks, board, holderSourceRank(text), holderDisplayName(text));
+        const prev = holderHoldings.get(id);
+        if (!prev || t > prev.time) {
+          holderHoldings.set(id, { time: t, tokens: new Map([[key, text]]) });
+        } else if (t === prev.time) {
+          prev.tokens.set(key, text);
+        }
+      }
+    }
+  }
+  const rows = [];
+  for (const [key, meta] of tokenMeta) {
+    const row = cloneTokenRow(meta.row);
+    const lines = [];
+    for (const [id, { tokens }] of holderHoldings) {
+      const line = tokens.get(key);
+      if (!line) continue;
+      lines.push(relabelSummaryHolderLine(line, holderRanks.get(id) || emptyHolderRanks()));
+    }
+    if (!lines.length) continue;
+    row["持仓明细"] = lines;
+    row["所有持仓人"] = lines.join("\n");
+    rows.push(finalizeMergedRow(row));
+  }
+  rows.sort((a, b) => (parseNumber(b["持仓市值"]) || 0) - (parseNumber(a["持仓市值"]) || 0));
+  const stamps = (payloads || [])
+    .map((p) => p?.generatedAt || p?.updatedAt)
+    .filter(Boolean)
+    .sort();
+  const latest = stamps.length ? stamps[stamps.length - 1] : "";
+  const parts = (typeof SOURCE_BOARDS !== "undefined" ? SOURCE_BOARDS : ["all", "7d", "24h"])
+    .map((b) => boardLabel(b))
+    .join(" / ");
+  return {
+    ok: true,
+    board: "sum",
+    boardLabel: "汇总",
+    rows,
+    tokenCount: rows.length,
+    generatedAt: latest,
+    updatedAt: latest,
+    note: `汇总 · ${parts}：同一玩家使用查询时间最新的持仓`,
+  };
 }
 
 function showRowTip(row, tr, clientX, clientY) {
@@ -1203,13 +1486,16 @@ async function cancelGoogleLogin() {
 
 async function loadCached(board = activeBoard, { render = true } = {}) {
   const target = normalizeBoard(board);
+  if (isSummaryBoard(target)) {
+    return loadSummaryFromCache({ render });
+  }
   try {
     const { data } = await fetchJson(
       `/api/fomo-top20/cached?board=${encodeURIComponent(target)}`
     );
-    if (data.ok && data.rows && data.rows.length) {
+    if (cachePayloadUsable(data)) {
       boardPayloads[target] = data;
-      if (render && target === activeBoard) {
+      if (render && target === activeBoard && (data.rows || []).length) {
         renderTable(data);
         setJobStatus(`缓存 · ${formatTime(data.generatedAt || data.updatedAt)}`);
       }
@@ -1220,6 +1506,212 @@ async function loadCached(board = activeBoard, { render = true } = {}) {
     if (isAbortError(e)) return { aborted: true };
     return { error: networkErrorMessage(e) || "缓存读取失败" };
   }
+}
+
+function renderSummaryFromCaches() {
+  const payload = mergeSummaryPayloads(SOURCE_BOARDS.map((b) => boardPayloads[b]).filter(Boolean));
+  boardPayloads.sum = payload;
+  if (isSummaryBoard(activeBoard)) renderTable(payload);
+  return payload;
+}
+
+async function loadSummaryFromCache({ render = true } = {}) {
+  const results = await Promise.all(
+    SOURCE_BOARDS.map((board) => loadCached(board, { render: false }))
+  );
+  if (results.some((r) => r?.aborted)) return { aborted: true };
+  const errors = results.filter((r) => r?.error).map((r) => r.error);
+  const payload = renderSummaryFromCaches();
+  if (payload.rows.length) {
+    if (render && isSummaryBoard(activeBoard) && !refreshBusy) {
+      setJobStatus(`缓存 · ${formatTime(payload.generatedAt || payload.updatedAt)}`);
+    }
+    return payload;
+  }
+  if (errors.length) return { error: errors[0] };
+  return null;
+}
+
+function summaryIsStale() {
+  return SOURCE_BOARDS.some((board) => {
+    const p = boardPayloads[board];
+    if (!p) return true;
+    return isCacheStale(p.generatedAt || p.updatedAt);
+  });
+}
+
+function stopPolling() {
+  if (!pollTimer) return;
+  clearTimeout(pollTimer);
+  pollTimer = null;
+}
+
+async function waitUntilJobIdle(gen = boardSelectGen) {
+  while (gen === boardSelectGen) {
+    const { data: st } = await fetchJson("/api/fomo-top20/status", { retries: 0 });
+    if (st.status !== "running") return st;
+    const jobBoard = normalizeBoard(st.board || "");
+    const progress = st.progress || "更新中…";
+    setRefreshBusy(true);
+    setJobStatus(progress, "running");
+    setFetchStatus(
+      isSummaryBoard(activeBoard)
+        ? isSummaryBoard(jobBoard)
+          ? progress
+          : `汇总 · ${boardLabel(jobBoard)} ${progress}`
+        : progress,
+      "running"
+    );
+    await sleep(900);
+  }
+  return { status: "aborted" };
+}
+
+async function refreshSourceBoard(board, { force = false, gen = boardSelectGen } = {}) {
+  const target = normalizeBoard(board);
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    if (gen !== boardSelectGen) return { aborted: true };
+    const { res, data } = await fetchJson("/api/fomo-top20/refresh", {
+      retries: 1,
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        mode: "fast",
+        board: target,
+        limit: boardLimit(target),
+        force: !!force,
+      }),
+    });
+    if (gen !== boardSelectGen) return { aborted: true };
+    if (!res.ok || !data.ok) throw new Error(data.detail || data.message || `${boardLabel(target)} 无法启动刷新`);
+    if (data.skipped) {
+      if (data.rows && data.rows.length) boardPayloads[target] = data;
+      return data;
+    }
+    if (data.started) {
+      refreshTargetBoard = target;
+      const st = await waitUntilJobIdle(gen);
+      if (st.status === "aborted") return { aborted: true };
+      if (st.status === "error") throw new Error(st.error || `${boardLabel(target)} 失败`);
+      const resultRes = await fetch(`/api/fomo-top20/result?board=${encodeURIComponent(target)}`);
+      if (!resultRes.ok) {
+        const err = await resultRes.json().catch(() => ({}));
+        throw new Error(err.detail || `${boardLabel(target)} 获取结果失败`);
+      }
+      const payload = await resultRes.json();
+      boardPayloads[target] = payload;
+      return payload;
+    }
+    await waitUntilJobIdle(gen);
+  }
+  throw new Error(`${boardLabel(target)} 刷新排队超时`);
+}
+
+async function startRefreshSummary({ silent = false, force = false, gen = boardSelectGen } = {}) {
+  refreshSilent = !!silent;
+  stopPolling();
+  setRefreshBusy(true);
+  const startMsg = silent ? "汇总 后台去重拉取持仓…" : "汇总 去重拉取三榜持仓…";
+  setJobStatus(startMsg, "running");
+  setFetchStatus(startMsg, "running");
+  showLoading(false);
+  try {
+    refreshTargetBoard = "sum";
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      if (gen !== boardSelectGen) return;
+      const { res, data } = await fetchJson("/api/fomo-top20/refresh", {
+        retries: 1,
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: "fast", board: "sum", force: !!force }),
+      });
+      if (!res.ok || !data.ok) throw new Error(data.detail || data.message || "汇总无法启动刷新");
+      if (data.skipped) {
+        const payload = await loadSummaryFromCache({ render: true });
+        await unlockRefreshIfIdle();
+        setFetchStatus("");
+        setJobStatus(`缓存 · ${formatTime(payload?.generatedAt || payload?.updatedAt)}`);
+        return payload;
+      }
+      if (data.started) {
+        const st = await waitUntilJobIdle(gen);
+        if (st.status === "aborted") return { aborted: true };
+        if (st.status === "error") throw new Error(st.error || "汇总失败");
+        const payload = await loadSummaryFromCache({ render: true });
+        await unlockRefreshIfIdle();
+        const doneMsg = `完成 · 汇总 ${payload?.tokenCount || 0} tokens`;
+        setJobStatus(doneMsg);
+        setFetchStatus(silent ? `后台已更新 · ${formatTime(payload?.updatedAt)}` : doneMsg);
+        if (silent) {
+          setTimeout(() => {
+            if (fetchStatusEl && fetchStatusEl.textContent.includes("后台已更新")) {
+              setFetchStatus("");
+            }
+          }, 4000);
+        }
+        return payload;
+      }
+      if (data.started === false) {
+        const runningBoard = normalizeBoard(data.board || "");
+        if (runningBoard && runningBoard !== "sum") {
+          const msg = `${boardLabel(runningBoard)} 更新中，请稍后再刷新汇总`;
+          setJobStatus(msg, "running");
+          setFetchStatus(msg, "running");
+          setRefreshBusy(true);
+          ensurePolling();
+          return data;
+        }
+        await waitUntilJobIdle(gen);
+      }
+    }
+    throw new Error("汇总刷新排队超时");
+  } catch (e) {
+    if (isAbortError(e) || gen !== boardSelectGen) return;
+    await unlockRefreshIfIdle();
+    const msg = networkErrorMessage(e) || "汇总刷新失败";
+    setJobStatus(msg, "error");
+    setFetchStatus(msg, "error");
+  }
+}
+
+async function selectSummaryBoard(gen) {
+  if (boardPayloads.sum) renderTable(boardPayloads.sum);
+  else {
+    panelTitle.textContent = "汇总";
+    if (modeChip) modeChip.textContent = "汇总";
+  }
+  if (await jobIsRunning()) setRefreshBusy(true);
+  const cached = await loadSummaryFromCache({ render: true });
+  if (gen !== boardSelectGen) return;
+  if (cached?.aborted) return;
+  if (cached?.error) {
+    if (boardPayloads.sum?.rows?.length) {
+      setFetchStatus("");
+      return;
+    }
+    setFetchStatus(cached.error, "error");
+    setJobStatus(cached.error, "error");
+    renderTable({
+      board: "sum",
+      boardLabel: "汇总",
+      rows: [],
+      columns: COLUMNS,
+      tokenCount: 0,
+      note: cached.error,
+    });
+    return;
+  }
+  if (!cached) {
+    setFetchStatus("汇总无缓存，正在去重拉取三榜持仓…", "running");
+    await startRefreshSummary({ silent: false, force: false, gen });
+    return;
+  }
+  if (!(await unlockRefreshIfIdle())) {
+    ensurePolling();
+    return;
+  }
+  setFetchStatus("");
+  setJobStatus(`缓存 · ${formatTime(cached.generatedAt || cached.updatedAt)}`);
 }
 
 async function pollUntilDone() {
@@ -1244,40 +1736,67 @@ async function pollUntilDone() {
       return;
     }
 
-    setRefreshBusy(false);
-
     if (st.status === "error") {
       const err = st.error || "失败";
       setJobStatus(err, "error");
-      if (jobBoard === activeBoard) {
+      if (jobBoard === activeBoard || isSummaryBoard(activeBoard) || isSummaryBoard(jobBoard)) {
         setFetchStatus(err, "error");
       } else {
         setFetchStatus(`${boardLabel(jobBoard)} 失败：${err}`, "error");
       }
       setActiveButton(activeBoard);
+      await unlockRefreshIfIdle();
       return;
     }
 
-    if (jobBoard !== activeBoard) {
-      setJobStatus(`完成 · ${boardLabel(jobBoard)}（后台）`);
-      setFetchStatus("");
+    if (isSummaryBoard(jobBoard)) {
+      const merged = await loadSummaryFromCache({ render: isSummaryBoard(activeBoard) });
+      await unlockRefreshIfIdle();
+      if (isSummaryBoard(activeBoard)) {
+        const doneMsg = `完成 · 汇总 ${merged?.tokenCount || 0} tokens`;
+        setJobStatus(doneMsg);
+        setFetchStatus(refreshSilent ? `后台已更新 · ${formatTime(merged?.updatedAt)}` : doneMsg);
+      } else {
+        setJobStatus("完成 · 汇总（后台）");
+        setFetchStatus("");
+      }
       return;
     }
-
-    const resultRes = await fetch(`/api/fomo-top20/result?board=${encodeURIComponent(jobBoard)}`);
+    const resultBoard = isSourceBoard(jobBoard) ? jobBoard : normalizeBoard(refreshTargetBoard || activeBoard);
+    const resultRes = await fetch(`/api/fomo-top20/result?board=${encodeURIComponent(resultBoard)}`);
     if (!resultRes.ok) {
       const err = await resultRes.json().catch(() => ({}));
       const msg = err.detail || "获取结果失败";
       setJobStatus(msg, "error");
       setFetchStatus(msg, "error");
+      await unlockRefreshIfIdle();
       return;
     }
     const payload = await resultRes.json();
+    if (isSourceBoard(resultBoard)) boardPayloads[resultBoard] = payload;
+
+    if (isSummaryBoard(activeBoard)) {
+      const merged = renderSummaryFromCaches();
+      const doneMsg = `完成 · 汇总 ${merged.tokenCount || 0} tokens`;
+      setJobStatus(doneMsg);
+      setFetchStatus(refreshSilent ? `后台已更新 · ${formatTime(merged.updatedAt)}` : doneMsg);
+      await unlockRefreshIfIdle();
+      return;
+    }
+
+    if (resultBoard !== activeBoard) {
+      setJobStatus(`完成 · ${boardLabel(resultBoard)}（后台）`);
+      setFetchStatus("");
+      await unlockRefreshIfIdle();
+      return;
+    }
+
     renderTable(payload);
     const fail = payload.stats?.tradersFail ? ` · fail ${payload.stats.tradersFail}` : "";
     const doneMsg = `完成 · ${payload.elapsedSec ?? "?"}s${fail}`;
     setJobStatus(doneMsg);
     setFetchStatus(refreshSilent ? `后台已更新 · ${formatTime(payload.updatedAt)}` : doneMsg);
+    await unlockRefreshIfIdle();
     if (refreshSilent) {
       setTimeout(() => {
         if (fetchStatusEl && fetchStatusEl.textContent.includes("后台已更新")) {
@@ -1297,6 +1816,10 @@ function ensurePolling() {
 }
 
 async function startRefresh({ silent = false, force = false, gen = boardSelectGen } = {}) {
+  if (isSummaryBoard(activeBoard)) {
+    await startRefreshSummary({ silent, force, gen });
+    return;
+  }
   const board = activeBoard;
   const limit = boardLimit(board);
   const label = boardLabel(board);
@@ -1320,7 +1843,7 @@ async function startRefresh({ silent = false, force = false, gen = boardSelectGe
     if (!data.ok) throw new Error(data.message || "无法启动刷新");
 
     if (data.skipped) {
-      setRefreshBusy(false);
+      await unlockRefreshIfIdle();
       if (board === activeBoard && data.rows && data.rows.length) {
         renderTable(data);
       }
@@ -1354,7 +1877,7 @@ async function startRefresh({ silent = false, force = false, gen = boardSelectGe
     pollUntilDone();
   } catch (e) {
     if (isAbortError(e) || gen !== boardSelectGen) return;
-    setRefreshBusy(false);
+    await unlockRefreshIfIdle();
     const msg = networkErrorMessage(e) || "无法启动刷新";
     setJobStatus(msg, "error");
     setFetchStatus(msg, "error");
@@ -1371,6 +1894,11 @@ async function selectBoard(board) {
   hideRowTip();
 
   const gen = ++boardSelectGen;
+
+  if (isSummaryBoard(target)) {
+    await selectSummaryBoard(gen);
+    return;
+  }
 
   if (boardPayloads[target]) {
     renderTable(boardPayloads[target]);
@@ -1437,7 +1965,10 @@ async function selectBoard(board) {
     if (isAbortError(e) || gen !== boardSelectGen) return;
   }
 
-  setRefreshBusy(false);
+  if (!(await unlockRefreshIfIdle())) {
+    ensurePolling();
+    return;
+  }
   setFetchStatus("");
   setJobStatus(`缓存 · ${formatTime(stamp)}`);
 }
@@ -1459,6 +1990,7 @@ function scheduleAutoRefresh() {
 
 function tickAutoRefresh() {
   if (document.hidden || refreshBusy) return;
+  if (isSummaryBoard(activeBoard) && !summaryIsStale()) return;
   startRefresh({ silent: true, force: false }).catch(() => {});
 }
 
@@ -1472,6 +2004,7 @@ function onSelectBoardError(e) {
 btnFast?.addEventListener("click", () => selectBoard("all").catch(onSelectBoardError));
 btn7d?.addEventListener("click", () => selectBoard("7d").catch(onSelectBoardError));
 btn24h?.addEventListener("click", () => selectBoard("24h").catch(onSelectBoardError));
+btnSum?.addEventListener("click", () => selectBoard("sum").catch(onSelectBoardError));
 btnRefreshBoard?.addEventListener("click", () =>
   forceRefreshBoard().catch((e) => {
     const msg = networkErrorMessage(e) || String(e);

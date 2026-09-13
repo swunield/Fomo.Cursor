@@ -53,6 +53,8 @@ LIMIT_MAX = 200
 REFRESH_MINUTES_MIN = 1
 REFRESH_MINUTES_MAX = 180
 
+SOURCE_BOARD_KEYS = ("all", "7d", "24h")
+
 BOARD_CONFIG = {
     "all": {
         "boardKey": "all",
@@ -293,6 +295,56 @@ def resolve_board(board: str, limit: int | None = None) -> dict:
     }
 
 
+def unique_traders(*groups: list[dict]) -> list[dict]:
+    """Keep the first occurrence of each player across leaderboards."""
+    seen_uid: set[str] = set()
+    seen_handle: set[str] = set()
+    out: list[dict] = []
+    for group in groups:
+        for trader in group or []:
+            uid = str(trader.get("uid") or "").strip()
+            handle = str(trader.get("handle") or "").strip().lower()
+            if uid and uid in seen_uid:
+                continue
+            if handle and handle in seen_handle:
+                continue
+            if uid:
+                seen_uid.add(uid)
+            if handle:
+                seen_handle.add(handle)
+            out.append(trader)
+    return out
+
+
+def token_map_for_traders(
+    token_map: dict[str, list[dict]],
+    traders: list[dict],
+) -> dict[str, list[dict]]:
+    """Filter shared holdings down to one board and rewrite board ranks."""
+    by_handle = {
+        str(t.get("handle") or "").strip().lower(): t
+        for t in traders or []
+        if t.get("handle")
+    }
+    by_uid = {
+        str(t.get("uid") or "").strip(): t for t in traders or [] if t.get("uid")
+    }
+    out: dict[str, list[dict]] = defaultdict(list)
+    for addr, holders in (token_map or {}).items():
+        for holder in holders:
+            uid = str(holder.get("uid") or "").strip()
+            handle = str(holder.get("handle") or "").strip().lower()
+            trader = (by_uid.get(uid) if uid else None) or by_handle.get(handle)
+            if not trader:
+                continue
+            entry = dict(holder)
+            entry["rank"] = trader.get("rank") or entry.get("rank")
+            entry["name"] = trader.get("name") or entry.get("name")
+            entry["handle"] = trader.get("handle") or entry.get("handle")
+            out[addr].append(entry)
+    return out
+
+
 def _traders_from_fomo_api(period: str, limit: int) -> list[dict]:
     """Official FOMO leaderboard.
 
@@ -463,6 +515,7 @@ def collect_open_holdings(
                         "rank": trader["rank"],
                         "name": trader["name"] or handle,
                         "handle": handle,
+                        "uid": user_id,
                         "value": value,
                         "tokenAddress": addr,
                         "networkId": h.get("networkId"),
@@ -840,6 +893,65 @@ def load_cached_result(board: str = "all") -> dict | None:
         return None
 
 
+def _finalize_board_run(
+    traders: list[dict],
+    token_map: dict[str, list[dict]],
+    token_meta_cache: dict,
+    ath_cache: dict,
+    stats: dict,
+    mode: str,
+    board: str,
+    started: float,
+    updated_at: str,
+    progress: Callable[[str], None] | None = None,
+    extra_note: str = "",
+) -> dict:
+    cfg = resolve_board(board)
+    rows = aggregate_rows(token_map, token_meta_cache, ath_cache)
+    source = f"FOMO {cfg['label']} balances (实时开仓+行情)"
+    limitation = (
+        f"{'全量' if mode == 'full' else '快速'}·{cfg['label']}：持仓来自 Privy balances；"
+        "市值/成交量/24h涨跌来自 tokenFilterResult（已缓存）。"
+    )
+    note = (
+        f"{'全量' if mode == 'full' else '快速'} · {cfg['label']}："
+        "持仓与行情均来自 FOMO balances（实时开仓）。"
+    )
+    src = (traders[0].get("source") if traders else "") or ""
+    if cfg["boardKey"] in SOURCE_BOARD_KEYS:
+        api_path = (
+            "/v2/leaderboard"
+            if cfg["boardKey"] == "all"
+            else f"/v2/leaderboard/{cfg['boardKey']}"
+        )
+        if src == "fomo-api":
+            note += f" 榜单来自官方 {api_path}（{len(traders)}人）。"
+        elif len(traders) < cfg["limit"]:
+            limitation += f" 数据源当前仅返回 {len(traders)} 名交易员（目标前{cfg['limit']}）。"
+            note += f" 当前源提供 {len(traders)}/{cfg['limit']} 名交易员。"
+    if extra_note:
+        note += extra_note
+    result = {
+        "updatedAt": updated_at,
+        "elapsedSec": round(time.time() - started, 1),
+        "mode": mode,
+        "board": cfg["boardKey"],
+        "boardLabel": cfg["label"],
+        "source": source,
+        "limitation": limitation,
+        "stats": stats,
+        "traders": traders,
+        "tokenCount": len(rows),
+        "columns": list(CSV_COLUMNS),
+        "rows": rows,
+        "note": note,
+    }
+    if progress:
+        progress(f"写入 {cfg['shortLabel']} CSV / JSON / Markdown…")
+    persist_outputs(traders, rows, result, board=cfg["boardKey"])
+    return result
+
+
 def run_pipeline(
     progress: Callable[[str], None] | None = None,
     mode: str = "fast",
@@ -867,52 +979,114 @@ def run_pipeline(
     if progress:
         progress("合并最高市值缓存…")
     ath_cache = load_cache()
-    rows = aggregate_rows(token_map, token_meta_cache, ath_cache)
-    save_cache(ath_cache)
-
     updated_at = datetime.now(timezone.utc).isoformat()
-    source = f"FOMO {cfg['label']} balances (实时开仓+行情)"
-    limitation = (
-        f"{'全量' if mode == 'full' else '快速'}·{cfg['label']}：持仓来自 Privy balances；"
-        "市值/成交量/24h涨跌来自 tokenFilterResult（已缓存）。"
+    result = _finalize_board_run(
+        traders,
+        token_map,
+        token_meta_cache,
+        ath_cache,
+        stats,
+        mode,
+        cfg["boardKey"],
+        started,
+        updated_at,
+        progress=progress,
     )
-    note = (
-        f"{'全量' if mode == 'full' else '快速'} · {cfg['label']}："
-        "持仓与行情均来自 FOMO balances（实时开仓）。"
-    )
-    src = (traders[0].get("source") if traders else "") or ""
-    if cfg["boardKey"] in ("all", "7d", "24h"):
-        api_path = (
-            "/v2/leaderboard"
-            if cfg["boardKey"] == "all"
-            else f"/v2/leaderboard/{cfg['boardKey']}"
-        )
-        if src == "fomo-api":
-            note += f" 榜单来自官方 {api_path}（{len(traders)}人）。"
-        elif len(traders) < cfg["limit"]:
-            limitation += f" 数据源当前仅返回 {len(traders)} 名交易员（目标前{cfg['limit']}）。"
-            note += f" 当前源提供 {len(traders)}/{cfg['limit']} 名交易员。"
+    save_cache(ath_cache)
+    if progress:
+        progress(f"完成，共 {len(result.get('rows') or [])} 个代币，用时 {result['elapsedSec']}s")
+    return result
 
+
+def run_summary_pipeline(
+    progress: Callable[[str], None] | None = None,
+    mode: str = "fast",
+) -> dict:
+    """Pull three leaderboards, fetch each player once, then write all board caches."""
+    started = time.time()
+    mode = "full" if mode == "full" else "fast"
+    traders_by_board: dict[str, list[dict]] = {}
+    for key in SOURCE_BOARD_KEYS:
+        traders_by_board[key] = fetch_traders(progress, board=key)
+    unique = unique_traders(*(traders_by_board[key] for key in SOURCE_BOARD_KEYS))
+    listed = sum(len(traders_by_board[key]) for key in SOURCE_BOARD_KEYS)
+    if progress:
+        progress(f"三榜共 {listed} 人次，去重后 {len(unique)} 人拉持仓…")
+    token_map, _profiles, stats, token_meta_cache = collect_open_holdings(
+        unique, progress, mode=mode
+    )
+
+    from fomo_auth import get_access_token
+
+    if get_access_token():
+        token_meta_cache = backfill_missing_token_meta(
+            token_map, token_meta_cache, unique, progress=progress
+        )
+
+    if progress:
+        progress("已用 FOMO balances 更新代币市值/成交量/涨跌缓存…")
+    if progress:
+        progress("按三榜拆分并写入缓存…")
+    ath_cache = load_cache()
+    updated_at = datetime.now(timezone.utc).isoformat()
+    extra = f" 汇总刷新按 userId 去重，持仓只拉一次（{len(unique)}/{listed}）。"
+    board_results = {}
+    for key in SOURCE_BOARD_KEYS:
+        board_map = token_map_for_traders(token_map, traders_by_board[key])
+        board_results[key] = _finalize_board_run(
+            traders_by_board[key],
+            board_map,
+            token_meta_cache,
+            ath_cache,
+            stats,
+            mode,
+            key,
+            started,
+            updated_at,
+            progress=progress,
+            extra_note=extra,
+        )
+    save_cache(ath_cache)
+    token_count = len(
+        {
+            str(row.get("合约地址") or "").strip().lower()
+            for result in board_results.values()
+            for row in (result.get("rows") or [])
+            if row.get("合约地址")
+        }
+    )
     result = {
         "updatedAt": updated_at,
         "elapsedSec": round(time.time() - started, 1),
         "mode": mode,
-        "board": cfg["boardKey"],
-        "boardLabel": cfg["label"],
-        "source": source,
-        "limitation": limitation,
-        "stats": stats,
-        "traders": traders,
-        "tokenCount": len(rows),
+        "board": "sum",
+        "boardLabel": "汇总",
+        "source": "FOMO 汇总 balances（三榜去重）",
+        "limitation": (
+            f"{'全量' if mode == 'full' else '快速'}·汇总：同一玩家持仓只请求一次 balances。"
+        ),
+        "stats": {
+            **stats,
+            "uniqueTraders": len(unique),
+            "listedTraders": listed,
+            "boardCounts": {key: len(traders_by_board[key]) for key in SOURCE_BOARD_KEYS},
+        },
+        "traders": unique,
+        "tokenCount": token_count,
         "columns": list(CSV_COLUMNS),
-        "rows": rows,
-        "note": note,
+        "rows": [],
+        "note": (
+            f"汇总：三榜去重后 {len(unique)} 人拉持仓，已写入总榜/7日榜/1日榜缓存。"
+        ),
+        "boards": {
+            key: {"tokenCount": board_results[key].get("tokenCount") or 0}
+            for key in SOURCE_BOARD_KEYS
+        },
     }
     if progress:
-        progress("写入 CSV / JSON / Markdown…")
-    persist_outputs(traders, rows, result, board=cfg["boardKey"])
-    if progress:
-        progress(f"完成，共 {len(rows)} 个代币，用时 {result['elapsedSec']}s")
+        progress(
+            f"完成，去重 {len(unique)} 人，约 {token_count} 个代币，用时 {result['elapsedSec']}s"
+        )
     return result
 
 

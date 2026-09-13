@@ -99,6 +99,67 @@ class RefreshSkipTests(unittest.TestCase):
         self.assertTrue(res.json().get("started"))
         threading_mod.Thread.assert_called_once()
 
+    def test_summary_refresh_keeps_board_sum(self):
+        from fastapi.testclient import TestClient
+
+        from app import app
+
+        cached = _cached(age_sec=120, board="all")
+        with patch("app.load_cached_result", return_value=cached), patch("app.threading") as threading_mod:
+            res = TestClient(app).post(
+                "/api/fomo-top20/refresh",
+                json={"mode": "fast", "board": "sum", "force": True},
+            )
+        self.assertEqual(res.status_code, 200)
+        body = res.json()
+        self.assertTrue(body.get("started"))
+        self.assertEqual(body.get("board"), "sum")
+        threading_mod.Thread.assert_called_once()
+
+    def test_summary_refresh_skips_only_when_all_three_fresh(self):
+        from fastapi.testclient import TestClient
+
+        from app import app
+
+        def load_cached(board="all"):
+            return _cached(age_sec=120, board=board)
+
+        with patch("app.load_cached_result", side_effect=load_cached), patch(
+            "app.threading"
+        ) as threading_mod:
+            res = TestClient(app).post(
+                "/api/fomo-top20/refresh",
+                json={"mode": "fast", "board": "sum", "force": False},
+            )
+        self.assertEqual(res.status_code, 200)
+        body = res.json()
+        self.assertTrue(body.get("skipped"))
+        self.assertEqual(body.get("board"), "sum")
+        threading_mod.Thread.assert_not_called()
+
+    def test_summary_refresh_starts_when_one_source_stale(self):
+        from fastapi.testclient import TestClient
+
+        from app import app
+
+        def load_cached(board="all"):
+            if board == "7d":
+                return _cached(age_sec=CACHE_FRESH_SEC + 30, board="7d")
+            return _cached(age_sec=120, board=board)
+
+        with patch("app.load_cached_result", side_effect=load_cached), patch(
+            "app.threading"
+        ) as threading_mod:
+            res = TestClient(app).post(
+                "/api/fomo-top20/refresh",
+                json={"mode": "fast", "board": "sum", "force": False},
+            )
+        self.assertEqual(res.status_code, 200)
+        body = res.json()
+        self.assertTrue(body.get("started"))
+        self.assertEqual(body.get("board"), "sum")
+        threading_mod.Thread.assert_called_once()
+
 
 class CachedPayloadTests(unittest.TestCase):
     def test_table_payload_omits_trader_dump(self):
@@ -114,6 +175,32 @@ class CachedPayloadTests(unittest.TestCase):
         )
         self.assertEqual(body["rows"], [{"名称": "AAA"}])
         self.assertEqual(body.get("traders"), [])
+        self.assertEqual(body.get("traderRanks"), [])
+
+    def test_cached_payload_keeps_compact_trader_ranks(self):
+        from app import _payload_from_cached
+
+        body = _payload_from_cached(
+            {
+                "generatedAt": "2026-09-11T00:00:00+00:00",
+                "board": "all",
+                "rows": [{"名称": "AAA"}],
+                "traders": [
+                    {
+                        "rank": 13,
+                        "name": "point farm capital",
+                        "handle": "pointfarmcap",
+                        "uid": "secret-uid",
+                        "pnl": 123,
+                    }
+                ],
+            }
+        )
+        self.assertEqual(body.get("traders"), [])
+        self.assertEqual(
+            body.get("traderRanks"),
+            [{"rank": 13, "name": "point farm capital", "handle": "pointfarmcap"}],
+        )
 
 
 class BoardDisplayLabelTests(unittest.TestCase):

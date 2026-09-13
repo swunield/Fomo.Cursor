@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Syne:wght@600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/styles.css?v=20260913f" />
+  <link rel="stylesheet" href="/static/styles.css?v=20260913m" />
 </head>
 <body>
   <div class="grain" aria-hidden="true"></div>
@@ -27,6 +27,10 @@
       <button id="btn-close-sidebar" class="sidebar-close-btn" type="button" aria-label="关闭菜单">✕</button>
     </div>
     <nav class="nav">
+      <button id="btn-sum" class="nav-btn" type="button" data-board="sum">
+        <span class="nav-btn-label">汇总</span>
+        <span class="nav-btn-hint">三榜</span>
+      </button>
       <button id="btn-top20" class="nav-btn" type="button" data-board="all">
         <span class="nav-btn-label">总榜</span>
         <span class="nav-btn-hint" id="hint-all-fast">前20</span>
@@ -196,6 +200,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=20260913f"></script>
+  <script src="/static/app.js?v=20260913m"></script>
 </body>
 </html>

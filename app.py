@@ -20,6 +20,7 @@ from fomo_pipeline import (
     load_settings,
     resolve_board,
     run_pipeline,
+    run_summary_pipeline,
     save_settings,
 )
 
@@ -53,7 +54,7 @@ class GoogleCompletePayload(BaseModel):
 
 class RefreshPayload(BaseModel):
     mode: str = Field(default="fast", description="fast | full")
-    board: str = Field(default="all", description="all | 7d | 24h")
+    board: str = Field(default="all", description="all | 7d | 24h | sum")
     limit: int | None = Field(default=None, description="override top-N for this run")
     force: bool = Field(default=False, description="ignore 10-minute cache freshness")
 
@@ -66,7 +67,10 @@ class SettingsPayload(BaseModel):
 
 
 def _normalize_board(board: str | None) -> str:
-    return resolve_board(board or "all")["boardKey"]
+    raw = (board or "all").strip().lower()
+    if raw in ("sum", "summary"):
+        return "sum"
+    return resolve_board(raw)["boardKey"]
 
 
 def _set_progress(msg: str) -> None:
@@ -76,6 +80,18 @@ def _set_progress(msg: str) -> None:
 
 def _run_job(mode: str, board: str, limit: int | None = None) -> None:
     try:
+        if board == "sum":
+            _set_progress(f"开始刷新（汇总 · {mode}）…")
+            result = run_summary_pipeline(progress=_set_progress, mode=mode)
+            uniq = (result.get("stats") or {}).get("uniqueTraders")
+            with _lock:
+                _job["status"] = "done"
+                _job["result"] = result
+                _job["error"] = None
+                _job["mode"] = mode
+                _job["board"] = "sum"
+                _job["progress"] = f"完成 · 汇总去重 {uniq or 0} 人"
+            return
         cfg = resolve_board(board, limit=limit)
         _set_progress(f"开始刷新（{cfg['label']} · {mode}）…")
         result = run_pipeline(
@@ -134,6 +150,23 @@ def _relabel_board_text(value: str) -> str:
     return (value or "").replace("24小时榜", "1日榜")
 
 
+def _compact_trader_ranks(cached: dict) -> list[dict]:
+    out = []
+    for trader in cached.get("traders") or []:
+        if not isinstance(trader, dict):
+            continue
+        try:
+            rank = int(trader.get("rank") or 0)
+        except (TypeError, ValueError):
+            rank = 0
+        name = str(trader.get("name") or "").strip()
+        handle = str(trader.get("handle") or "").strip()
+        if rank <= 0 or (not name and not handle):
+            continue
+        out.append({"rank": rank, "name": name, "handle": handle})
+    return out
+
+
 def _payload_from_cached(cached: dict, source: str = "cache") -> dict:
     rows = _format_display_rows(cached.get("rows") or cached.get("tokens") or [])
     return {
@@ -142,6 +175,7 @@ def _payload_from_cached(cached: dict, source: str = "cache") -> dict:
         "updatedAt": cached.get("generatedAt") or cached.get("marketCapUpdatedAt"),
         "generatedAt": cached.get("generatedAt") or cached.get("marketCapUpdatedAt"),
         "traders": [],
+        "traderRanks": _compact_trader_ranks(cached),
         "tokenCount": cached.get("tokenCount") or len(rows),
         "columns": cached.get("columns") or (list(rows[0].keys()) if rows else []),
         "rows": rows,
@@ -252,6 +286,14 @@ def api_settings_save(payload: SettingsPayload):
 @app.get("/api/fomo-top20/cached")
 def fomo_cached(board: str = Query(default="all")):
     board = _normalize_board(board)
+    if board == "sum":
+        return {
+            "ok": False,
+            "rows": [],
+            "columns": [],
+            "board": "sum",
+            "message": "汇总请分别读取三榜缓存",
+        }
     cached = load_cached_result(board=board)
     if not cached:
         return {
@@ -286,6 +328,44 @@ def fomo_refresh(payload: RefreshPayload | None = None):
     force = bool(payload.force) if payload else False
     if mode == "full" and not auth_status().get("configured"):
         raise HTTPException(status_code=400, detail="全量模式需先配置 Privy Access Token")
+    if board == "sum":
+        if not force:
+            max_age = int(load_settings().get("refreshMinutes") or 10) * 60
+            source_cached = [
+                load_cached_result(board=key) for key in ("all", "7d", "24h")
+            ]
+            if all(is_cache_fresh(item, max_age_sec=max_age) for item in source_cached):
+                return {
+                    "ok": True,
+                    "started": False,
+                    "skipped": True,
+                    "reason": "fresh",
+                    "board": "sum",
+                    "boardLabel": "汇总",
+                }
+        with _lock:
+            if _job["status"] == "running":
+                return {
+                    "ok": True,
+                    "started": False,
+                    "message": "已有任务在运行",
+                    "mode": _job.get("mode"),
+                    "board": _job.get("board"),
+                }
+            _job["status"] = "running"
+            _job["progress"] = "排队中…"
+            _job["error"] = None
+            _job["result"] = None
+            _job["mode"] = mode
+            _job["board"] = "sum"
+        threading.Thread(target=_run_job, args=(mode, "sum", None), daemon=True).start()
+        return {
+            "ok": True,
+            "started": True,
+            "mode": mode,
+            "board": "sum",
+            "boardLabel": "汇总",
+        }
     if not force:
         cached = load_cached_result(board=board)
         max_age = int(load_settings().get("refreshMinutes") or 10) * 60
@@ -334,6 +414,13 @@ def fomo_result(board: str = Query(default="all")):
     with _lock:
         if _job["status"] == "error":
             raise HTTPException(status_code=500, detail=_job["error"] or "刷新失败")
+        if board == "sum":
+            result = _job["result"]
+            if result and result.get("board") == "sum":
+                result = dict(result)
+                result["rows"] = _format_display_rows(result.get("rows") or [])
+                return {"ok": True, "source": "live", **result}
+            raise HTTPException(status_code=404, detail="尚无汇总结果")
         if _job["result"] is None:
             cached = load_cached_result(board=board)
             if cached:
