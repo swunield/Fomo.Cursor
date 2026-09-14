@@ -1243,9 +1243,15 @@ function showRowTip(row, tr, clientX, clientY) {
   const holdersClass =
     holderLines.length > 10 ? "row-tip-holders is-scrollable-y" : "row-tip-holders";
   const addr = String(row["合约地址"] || "").trim();
+  const mcapText = String(row["市值"] ?? "").trim() || "—";
+  const volText = String(row["成交量"] ?? "").trim() || "—";
+  const chgText = String(row["24h涨跌"] ?? "").trim() || "—";
 
   rowTip.innerHTML = `
-    <div class="row-tip-line row-tip-name">${escapeHtml(String(name))}</div>
+    <div class="row-tip-line row-tip-name">
+      <span class="row-tip-name-text">${escapeHtml(String(name))}</span>
+      <span class="row-tip-name-meta">${escapeHtml(mcapText)} · ${escapeHtml(volText)} · <span class="num chg ${chgClass(chgText)}">${escapeHtml(chgText)}</span></span>
+    </div>
     <div class="row-tip-line"><span class="row-tip-label">平台</span>${escapeHtml(String(platform))}</div>
     <div class="row-tip-line"><span class="row-tip-label">创建时间</span>${escapeHtml(String(createdText))}</div>
     <div class="row-tip-line">
