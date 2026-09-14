@@ -1285,6 +1285,15 @@ const TOKEN_CHART_LABELS = {
   pnl: "盈亏",
 };
 
+const TOKEN_CHART_HIDDEN = new Set();
+
+function toggleTokenChartKey(key) {
+  if (!TOKEN_CHART_KEYS.includes(key)) return false;
+  if (TOKEN_CHART_HIDDEN.has(key)) TOKEN_CHART_HIDDEN.delete(key);
+  else TOKEN_CHART_HIDDEN.add(key);
+  return true;
+}
+
 function chartAxisTimeLabel(val) {
   const full = shortenTime(val);
   const m = String(full).match(/^(\d{4})-(\d{2}-\d{2}) (\d{2}:\d{2})/);
@@ -1381,7 +1390,8 @@ function formatChartLegend(series) {
     if (last) {
       val = key === "pnl" ? fmtSignedKm(last[key]) : fmtKm(last[key]);
     }
-    return `<span style="color:${color}">${label} ${val}</span>`;
+    const hidden = TOKEN_CHART_HIDDEN.has(key) ? " is-hidden" : "";
+    return `<button type="button" class="row-tip-chart-legend-item${hidden}" data-key="${key}" style="color:${color}">${label} ${val}</button>`;
   }).join("");
 }
 

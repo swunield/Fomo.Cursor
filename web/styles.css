@@ -809,6 +809,21 @@ tbody tr.tip-active td {
   font-size: 10px;
 }
 
+.row-tip-chart-legend-item {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+.row-tip-chart-legend-item.is-hidden {
+  opacity: 0.4;
+  text-decoration: line-through;
+}
+
 .row-tip-chart-status {
   color: var(--muted);
   font-size: 11px;

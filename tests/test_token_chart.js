@@ -63,4 +63,32 @@ const fetchAt = pollFn.indexOf("await fetchTipTokenChart");
 const genGuardAt = pollFn.indexOf("if (gen !== tipChartGen) return", fetchAt);
 assert(fetchAt >= 0 && genGuardAt > fetchAt, "pollTipTokenChart must abort after fetch if gen changed");
 
+assert(src.includes("const TOKEN_CHART_HIDDEN = new Set()"), "TOKEN_CHART_HIDDEN module set");
+assert(src.includes("function toggleTokenChartKey("), "toggleTokenChartKey missing");
+assert(
+  /function toggleTokenChartKey\([^)]*\)[\s\S]*TOKEN_CHART_KEYS\.includes/.test(src),
+  "toggleTokenChartKey must ignore unknown keys"
+);
+
+const legendFn = src.slice(
+  src.indexOf("function formatChartLegend("),
+  src.indexOf("function tipChartEls(")
+);
+assert(legendFn.includes("<button"), "legend items must be buttons");
+assert(legendFn.includes('type="button"'), "legend buttons need type=button");
+assert(legendFn.includes("data-key"), "legend buttons need data-key");
+assert(legendFn.includes("row-tip-chart-legend-item"), "legend button class");
+assert(legendFn.includes("is-hidden"), "hidden legend class");
+assert(!legendFn.includes("<span style="), "legend must not keep static spans");
+
+const css = fs.readFileSync(path.join(__dirname, "..", "web", "styles.css"), "utf8");
+assert(css.includes(".row-tip-chart-legend-item"), "legend button css");
+assert(css.includes(".row-tip-chart-legend-item.is-hidden"), "hidden legend css");
+const hiddenBlock = css.slice(
+  css.indexOf(".row-tip-chart-legend-item.is-hidden"),
+  css.indexOf(".row-tip-chart-status")
+);
+assert(/opacity:\s*0\.4/.test(hiddenBlock), "hidden legend is faded");
+assert(/text-decoration:\s*line-through/.test(hiddenBlock), "hidden legend is struck through");
+
 console.log("ok");
