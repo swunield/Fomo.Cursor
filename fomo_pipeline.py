@@ -52,6 +52,17 @@ LIMIT_MIN = 1
 LIMIT_MAX = 200
 REFRESH_MINUTES_MIN = 1
 REFRESH_MINUTES_MAX = 180
+FILTER_KEYS = (
+    "mcapMin",
+    "mcapMax",
+    "holdMin",
+    "holdMax",
+    "countMin",
+    "countMax",
+    "daysMin",
+    "daysMax",
+)
+FILTER_TEXT_MAX = 32
 
 SOURCE_BOARD_KEYS = ("all", "7d", "24h")
 
@@ -221,8 +232,20 @@ def clamp_refresh_minutes(value: Any, default: int) -> int:
     return max(REFRESH_MINUTES_MIN, min(REFRESH_MINUTES_MAX, n))
 
 
+def sanitize_filter_text(value: Any) -> str:
+    if value is None:
+        return ""
+    text = "".join(ch for ch in str(value).strip() if ch.isprintable())
+    return text[:FILTER_TEXT_MAX]
+
+
+def empty_filters() -> dict[str, str]:
+    return {key: "" for key in FILTER_KEYS}
+
+
 def load_settings() -> dict:
     data = dict(DEFAULT_SETTINGS)
+    data.update(empty_filters())
     if SETTINGS_PATH.exists():
         try:
             raw = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
@@ -230,7 +253,7 @@ def load_settings() -> dict:
                 data.update(raw)
         except Exception:
             pass
-    return {
+    out = {
         "allLimit": clamp_limit(data.get("allLimit"), DEFAULT_SETTINGS["allLimit"]),
         "dayLimit": clamp_limit(data.get("dayLimit"), DEFAULT_SETTINGS["dayLimit"]),
         "h24Limit": clamp_limit(
@@ -242,6 +265,9 @@ def load_settings() -> dict:
             DEFAULT_SETTINGS["refreshMinutes"],
         ),
     }
+    for key in FILTER_KEYS:
+        out[key] = sanitize_filter_text(data.get(key, ""))
+    return out
 
 
 def save_settings(
@@ -249,6 +275,7 @@ def save_settings(
     day_limit: Any = None,
     h24_limit: Any = None,
     refresh_minutes: Any = None,
+    filters: dict | None = None,
 ) -> dict:
     cur = load_settings()
     if all_limit is not None:
@@ -261,6 +288,10 @@ def save_settings(
         cur["refreshMinutes"] = clamp_refresh_minutes(
             refresh_minutes, DEFAULT_SETTINGS["refreshMinutes"]
         )
+    if filters:
+        for key in FILTER_KEYS:
+            if key in filters and filters[key] is not None:
+                cur[key] = sanitize_filter_text(filters[key])
     SETTINGS_PATH.write_text(
         json.dumps(cur, ensure_ascii=False, indent=2), encoding="utf-8"
     )

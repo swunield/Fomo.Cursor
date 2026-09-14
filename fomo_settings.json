@@ -1,4 +1,14 @@
 {
   "allLimit": 20,
-  "dayLimit": 50
+  "dayLimit": 50,
+  "h24Limit": 50,
+  "refreshMinutes": 10,
+  "mcapMin": "2M",
+  "mcapMax": "800M",
+  "holdMin": "20K",
+  "holdMax": "",
+  "countMin": "2",
+  "countMax": "",
+  "daysMin": "",
+  "daysMax": ""
 }

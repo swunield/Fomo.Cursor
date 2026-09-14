@@ -30,6 +30,7 @@ from fomo_google_login import login_status, request_cancel, start_google_login
 from fomo_oauth import complete_browser_google_oauth, parse_privy_callback, start_browser_google_oauth
 from fomo_favorites import load_favorites, toggle_favorite
 from fomo_pipeline import (
+    FILTER_KEYS,
     is_cache_fresh,
     load_cached_result,
     load_settings,
@@ -81,6 +82,14 @@ class SettingsPayload(BaseModel):
     dayLimit: int | None = Field(default=None, description="7日榜人数")
     h24Limit: int | None = Field(default=None, description="1日榜人数")
     refreshMinutes: int | None = Field(default=None, description="自动刷新间隔（分钟）")
+    mcapMin: str | None = None
+    mcapMax: str | None = None
+    holdMin: str | None = None
+    holdMax: str | None = None
+    countMin: str | None = None
+    countMax: str | None = None
+    daysMin: str | None = None
+    daysMax: str | None = None
 
 
 class TokenChartHolder(BaseModel):
@@ -302,11 +311,17 @@ def api_settings_get():
 
 @app.post("/api/settings")
 def api_settings_save(payload: SettingsPayload):
+    filters = {
+        key: getattr(payload, key)
+        for key in FILTER_KEYS
+        if getattr(payload, key) is not None
+    }
     s = save_settings(
         all_limit=payload.allLimit,
         day_limit=payload.dayLimit,
         h24_limit=payload.h24Limit,
         refresh_minutes=payload.refreshMinutes,
+        filters=filters or None,
     )
     return {
         "ok": True,

@@ -39,6 +39,15 @@ assert(css.includes(".fav-btn"), "favorite button styles");
 assert(css.includes(".fav-btn.is-on") || css.includes(".fav-btn.is-on,"), "lit favorite style");
 assert(css.includes(".fav-filter-btn"), "toolbar favorite filter style");
 
+const cardFn = src.slice(src.indexOf("function renderCards("), src.indexOf("function hideRowTip("));
+const cardHead = cardFn.slice(cardFn.indexOf("token-card-head"), cardFn.indexOf("token-card-name"));
+assert(cardHead.includes("favButton("), "mobile card should show favorite star");
+assert(cardHead.includes("copyAddrButton("), "mobile card should show copy button");
+assert(
+  cardHead.indexOf("favButton(") < cardHead.indexOf("copyAddrButton("),
+  "mobile: favorite star should sit left of copy"
+);
+
 assert(src.includes("favOnly"), "name filter can combine with favorite-only");
 
 const start = src.indexOf("function parseNumber(value)");

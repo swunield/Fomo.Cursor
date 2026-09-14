@@ -356,6 +356,11 @@ function applySettingsToUi(s) {
   if (hintAllFast) hintAllFast.textContent = `前${boardSettings.allLimit}`;
   if (hint7dFast) hint7dFast.textContent = `前${boardSettings.dayLimit}`;
   if (hint24hFast) hint24hFast.textContent = `前${boardSettings.h24Limit}`;
+  const filters = {};
+  for (const f of FILTER_FIELDS) {
+    if (s && Object.prototype.hasOwnProperty.call(s, f.key)) filters[f.key] = s[f.key] || "";
+  }
+  if (Object.keys(filters).length) writeFilterInputs(filters);
   updateSettingsHint();
   scheduleAutoRefresh();
 }
@@ -394,7 +399,10 @@ async function loadSettings() {
   try {
     const res = await fetch("/api/settings");
     const data = await res.json();
-    if (data && data.ok) applySettingsToUi(data);
+    if (data && data.ok) {
+      applySettingsToUi(data);
+      await migrateLocalFiltersIfNeeded(data);
+    }
   } catch {
     applySettingsToUi(boardSettings);
   }
@@ -408,7 +416,7 @@ async function saveBoardSettings() {
   const res = await fetch("/api/settings", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ allLimit, dayLimit, h24Limit, refreshMinutes }),
+    body: JSON.stringify({ allLimit, dayLimit, h24Limit, refreshMinutes, ...readFilterInputs() }),
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok || !data.ok) throw new Error(data.detail || data.message || "保存设置失败");
@@ -521,19 +529,48 @@ function writeFilterInputs(values) {
 function loadStoredFilters() {
   try {
     const raw = localStorage.getItem(FILTER_STORAGE_KEY);
-    if (!raw) return;
-    writeFilterInputs(JSON.parse(raw));
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+function clearStoredFilters() {
+  try {
+    localStorage.removeItem(FILTER_STORAGE_KEY);
   } catch {
     /* ignore */
   }
 }
 
-function saveStoredFilters(values) {
+function filtersAreEmpty(values) {
+  return FILTER_FIELDS.every((f) => !String(values?.[f.key] || "").trim());
+}
+
+async function migrateLocalFiltersIfNeeded(server) {
+  if (!filtersAreEmpty(server)) return;
+  const local = loadStoredFilters();
+  if (!local || filtersAreEmpty(local)) return;
+  writeFilterInputs(local);
   try {
-    localStorage.setItem(FILTER_STORAGE_KEY, JSON.stringify(values));
+    await persistSettingsFilters(local);
+    clearStoredFilters();
   } catch {
-    /* ignore */
+    /* keep local copy if server write fails */
   }
+}
+
+async function persistSettingsFilters(values = readFilterInputs()) {
+  const res = await fetch("/api/settings", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(values),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data.ok) throw new Error(data.detail || data.message || "保存筛选失败");
+  applySettingsToUi(data);
+  return data;
 }
 
 function readNameFilter() {
@@ -774,13 +811,16 @@ function favButton(row) {
   return `<button type="button" class="fav-btn${on ? " is-on" : ""}" data-addr="${addrAttr}" title="收藏" aria-label="收藏" aria-pressed="${on ? "true" : "false"}">★</button>`;
 }
 
-function nameActionButtons(row) {
+function debotLinkButton(row) {
   const addr = String(row["合约地址"] || "");
   const url = debotTokenUrl(addr, row["发射平台"], row.debotChain);
-  const debot = url
+  return url
     ? `<a class="debot-link-btn" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" title="在 Debot 打开" aria-label="在 Debot 打开">↗</a>`
     : "";
-  return `${favButton(row)}${debot}`;
+}
+
+function nameActionButtons(row) {
+  return `${favButton(row)}${debotLinkButton(row)}`;
 }
 
 function renderTable(payload) {
@@ -896,7 +936,7 @@ function renderCards(rows) {
       const chg = row["24h涨跌"] ?? "";
       return `<article class="token-card" data-row-idx="${idx}">
         <div class="token-card-head">
-          ${copyAddrButton(row)}${nameActionButtons(row)}
+          ${favButton(row)}${copyAddrButton(row)}${debotLinkButton(row)}
           <div class="token-card-name">${escapeHtml(String(row["名称"] ?? ""))}</div>
           <div class="num chg ${chgClass(chg)}">${escapeHtml(String(chg))}</div>
         </div>
@@ -1655,9 +1695,9 @@ async function copyText(text) {
   return ok;
 }
 
-function applyFilters() {
+async function applyFilters() {
   const values = readFilterInputs();
-  saveStoredFilters(values);
+  await persistSettingsFilters(values);
   if (lastPayload) renderTable(lastPayload);
   else updateFilterSummary(0, 0, hasAnyFilter(getActiveFilters()));
 }
@@ -1708,9 +1748,9 @@ function toggleFavFilter() {
   applyNameFilter();
 }
 
-function resetFilters() {
+async function resetFilters() {
   writeFilterInputs({});
-  saveStoredFilters({});
+  await persistSettingsFilters(readFilterInputs());
   if (lastPayload) renderTable(lastPayload);
   else {
     updateFilterSummary(0, 0, false);
@@ -2494,8 +2534,12 @@ btnCancelGoogle?.addEventListener("click", () =>
 btnSaveSettings?.addEventListener("click", () =>
   saveBoardSettings().catch((e) => setJobStatus(String(e), "error"))
 );
-btnApplyFilter?.addEventListener("click", applyFilters);
-btnResetFilter?.addEventListener("click", resetFilters);
+btnApplyFilter?.addEventListener("click", () =>
+  applyFilters().catch((e) => setJobStatus(String(e), "error"))
+);
+btnResetFilter?.addEventListener("click", () =>
+  resetFilters().catch((e) => setJobStatus(String(e), "error"))
+);
 document.getElementById("flt-name")?.addEventListener("input", applyNameFilter);
 btnFavFilter?.addEventListener("click", toggleFavFilter);
 btnOpenSettings?.addEventListener("click", openSettings);
@@ -2515,7 +2559,7 @@ settingsOverlay?.addEventListener("click", (e) => {
 });
 for (const f of FILTER_FIELDS) {
   document.getElementById(f.id)?.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") applyFilters();
+    if (e.key === "Enter") applyFilters().catch((err) => setJobStatus(String(err), "error"));
   });
 }
 [setAllLimit, setDayLimit, setH24Limit, setRefreshMinutes].forEach((el) => {
@@ -2686,7 +2730,6 @@ document.addEventListener("visibilitychange", () => {
   if (stamp && isCacheStale(stamp)) tickAutoRefresh();
 });
 
-loadStoredFilters();
 renderSortChips();
 Promise.all([loadSettings(), loadFavorites()]).then(() => {
   refreshAuthStatus();
