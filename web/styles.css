@@ -641,6 +641,7 @@ tbody tr.tip-active td {
   font-size: 12px;
   line-height: 1.55;
   pointer-events: auto;
+  overscroll-behavior: contain;
   animation: tipIn 0.14s ease both;
 }
 

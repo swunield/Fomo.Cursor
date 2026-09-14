@@ -2519,16 +2519,20 @@ document.addEventListener("click", (e) => {
 });
 
 rowTip.addEventListener("click", (e) => {
+  e.stopPropagation();
   if (!e.target.closest(".row-tip-close")) return;
   e.preventDefault();
-  e.stopPropagation();
   hideRowTip();
 });
 
-rowTip.addEventListener("wheel", (e) => {
-  if (!e.target.closest(".row-tip-holders")) return;
+function trapTipScroll(e) {
   e.stopPropagation();
-}, { passive: true });
+  if (e.target.closest(".row-tip-holders")) return;
+  e.preventDefault();
+}
+
+rowTip.addEventListener("wheel", trapTipScroll, { passive: false });
+rowTip.addEventListener("touchmove", trapTipScroll, { passive: false });
 
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
