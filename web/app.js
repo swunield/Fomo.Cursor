@@ -1347,6 +1347,7 @@ function drawTokenChart(canvas, series) {
   }
   if (points.length < 2) return;
   for (const key of TOKEN_CHART_KEYS) {
+    if (TOKEN_CHART_HIDDEN.has(key)) continue;
     let min = Infinity;
     let max = -Infinity;
     for (const p of points) {
@@ -1378,6 +1379,12 @@ function drawTokenChart(canvas, series) {
     });
     if (started) ctx.stroke();
   }
+}
+
+function redrawTipChart(els) {
+  const series = els?.box?._series || [];
+  if (els?.canvas) drawTokenChart(els.canvas, series);
+  if (els?.legend) els.legend.innerHTML = formatChartLegend(series);
 }
 
 function formatChartLegend(series) {
@@ -1542,6 +1549,16 @@ function bindTipChart(row) {
       e.preventDefault();
       e.stopPropagation();
       refreshTipTokenChart(row);
+    });
+  }
+  if (els.legend) {
+    els.legend.addEventListener("click", (e) => {
+      const btn = e.target.closest("[data-key]");
+      if (!btn || !els.legend.contains(btn)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (!toggleTokenChartKey(btn.getAttribute("data-key"))) return;
+      redrawTipChart(els);
     });
   }
   loadTipTokenChart(row);

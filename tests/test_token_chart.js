@@ -91,4 +91,28 @@ const hiddenBlock = css.slice(
 assert(/opacity:\s*0\.4/.test(hiddenBlock), "hidden legend is faded");
 assert(/text-decoration:\s*line-through/.test(hiddenBlock), "hidden legend is struck through");
 
+assert(
+  /for \(const key of TOKEN_CHART_KEYS\)[\s\S]*TOKEN_CHART_HIDDEN\.has\(key\)[\s\S]*continue/.test(drawFn),
+  "drawTokenChart must skip hidden series"
+);
+
+assert(src.includes("function redrawTipChart("), "redrawTipChart missing");
+const redrawFn = src.slice(
+  src.indexOf("function redrawTipChart("),
+  src.indexOf("function formatChartLegend(")
+);
+assert(redrawFn.includes("drawTokenChart"), "redrawTipChart must redraw canvas");
+assert(redrawFn.includes("formatChartLegend"), "redrawTipChart must refresh legend");
+
+const bindFn = src.slice(
+  src.indexOf("function bindTipChart("),
+  src.indexOf("async function copyText(")
+);
+assert(bindFn.includes('closest("[data-key]")') || bindFn.includes("closest('[data-key]')"), "legend click uses data-key");
+assert(bindFn.includes("toggleTokenChartKey"), "legend click toggles key");
+assert(bindFn.includes("redrawTipChart"), "legend click redraws");
+assert(bindFn.includes("stopPropagation"), "legend click must not bubble");
+assert(!/startRefresh(Summary)?\(/.test(bindFn), "legend click must not start board refresh");
+assert(!bindFn.includes("setRefreshBusy("), "legend click must not toggle board busy");
+
 console.log("ok");
