@@ -27,7 +27,11 @@ assert(
 
 assert(css.includes(".name-filter-input"), "name filter should have toolbar styles");
 assert(
-  /margin-left:\s*auto/.test(css.slice(css.indexOf(".name-filter-input"), css.indexOf(".name-filter-input") + 400)),
+  /margin-left:\s*auto/.test(
+    css.slice(css.indexOf(".name-filter-cluster"), css.indexOf(".name-filter-cluster") + 240)
+  ) || /margin-left:\s*auto/.test(
+    css.slice(css.indexOf(".name-filter-input"), css.indexOf(".name-filter-input") + 400)
+  ),
   "name input should sit on the far right of the toolbar"
 );
 

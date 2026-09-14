@@ -34,6 +34,7 @@ SKIP_FILES = {
     "fomo_mcap_ath_cache.json",
     "fomo_mcap_live_cache.json",
     "fomo_settings.json",
+    "fomo_favorites.json",
 }
 SKIP_SUFFIXES = {".pyc", ".bat"}
 SKIP_NAME_PREFIXES = ("tmp_", "probe_")

@@ -28,6 +28,7 @@ from fomo_token_chart import (
 )
 from fomo_google_login import login_status, request_cancel, start_google_login
 from fomo_oauth import complete_browser_google_oauth, parse_privy_callback, start_browser_google_oauth
+from fomo_favorites import load_favorites, toggle_favorite
 from fomo_pipeline import (
     is_cache_fresh,
     load_cached_result,
@@ -93,6 +94,10 @@ class TokenChartHolder(BaseModel):
 class TokenChartRefreshPayload(BaseModel):
     addr: str
     holders: list[TokenChartHolder] = []
+
+
+class FavoriteTogglePayload(BaseModel):
+    addr: str = ""
 
 
 def _normalize_board(board: str | None) -> str:
@@ -537,6 +542,20 @@ def _run_chart_refresh(addr: str, holders: list[dict], circulating: float, token
             job["status"] = "error"
             job["error"] = str(exc)
             _chart_jobs[key] = job
+
+
+@app.get("/api/favorites")
+def favorites_get():
+    return {"ok": True, "addrs": load_favorites()}
+
+
+@app.post("/api/favorites/toggle")
+def favorites_toggle(payload: FavoriteTogglePayload):
+    try:
+        addr, favorited, addrs = toggle_favorite(payload.addr)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "addr": addr, "favorited": favorited, "addrs": addrs}
 
 
 @app.get("/api/fomo-top20/token-chart")

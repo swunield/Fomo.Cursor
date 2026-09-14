@@ -538,11 +538,18 @@ body.settings-open { overflow: hidden; }
   display: none;
 }
 
+.name-filter-cluster {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  flex: 0 0 auto;
+}
+
 .name-filter-input {
   flex: 0 0 auto;
-  margin-left: auto;
   width: 180px;
-  max-width: 42vw;
+  max-width: 38vw;
   background: #0a0e0b;
   color: var(--text);
   border: 1px solid var(--line);
@@ -683,7 +690,7 @@ tbody tr.tip-active td {
 
 .row-tip-name {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
   gap: 12px;
   font-family: var(--display);
@@ -691,6 +698,14 @@ tbody tr.tip-active td {
   font-size: 15px;
   letter-spacing: -0.01em;
   color: var(--accent);
+}
+
+.row-tip-name-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
 }
 
 .row-tip-name-text {
@@ -885,7 +900,21 @@ td.num { font-variant-numeric: tabular-nums; color: #d7e8c8; }
 .chg.chg-down { color: var(--chg-down); font-weight: 600; }
 .chg.chg-flat { color: var(--muted); }
 td.holders { max-width: 420px; color: var(--muted); }
-td.addr { color: #9bb0a0; font-size: 12px; }
+td.addr {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #9bb0a0;
+  font-size: 12px;
+  white-space: nowrap;
+  max-width: 360px;
+}
+
+.addr-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 
 td.name-cell {
   white-space: nowrap;
@@ -932,6 +961,43 @@ td.name-cell {
 .copy-addr-btn.copied {
   border-color: #5a7a3a;
   color: var(--accent);
+}
+
+.fav-btn,
+.fav-filter-btn {
+  appearance: none;
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--line);
+  background: rgba(200, 245, 66, 0.06);
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  display: inline-grid;
+  place-items: center;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+
+.fav-filter-btn {
+  width: 32px;
+  height: 32px;
+  font-size: 16px;
+}
+
+.fav-btn:hover,
+.fav-filter-btn:hover {
+  border-color: #5a7a3a;
+  color: var(--accent);
+}
+
+.fav-btn.is-on,
+.fav-filter-btn.is-on {
+  border-color: #c8a84b;
+  color: #f5d76e;
+  background: rgba(245, 215, 110, 0.12);
 }
 
 .empty-state {

@@ -108,6 +108,7 @@ const sidebarBackdrop = document.getElementById("sidebar-backdrop");
 const mobileSort = document.getElementById("mobile-sort");
 const fetchStatusEl = document.getElementById("fetch-status");
 const nameFilterInput = document.getElementById("flt-name");
+const btnFavFilter = document.getElementById("btn-fav-filter");
 
 let pollTimer = null;
 let autoRefreshTimer = null;
@@ -124,6 +125,7 @@ let refreshSilent = false;
 let refreshBusy = false;
 let googlePollTimer = null;
 let googleLoginBusy = false;
+let favoriteAddrs = new Set();
 
 function isAbortError(e) {
   return !!(e && (e.name === "AbortError" || /aborted/i.test(String(e.message || e))));
@@ -538,6 +540,27 @@ function readNameFilter() {
   return (nameFilterInput?.value || "").trim();
 }
 
+function tokenAddrKey(addr) {
+  return String(addr || "").trim().toLowerCase();
+}
+
+function favoriteSet(f) {
+  if (f && f.favorites instanceof Set) return f.favorites;
+  if (f && Array.isArray(f.favorites)) {
+    return new Set(f.favorites.map((x) => tokenAddrKey(x)));
+  }
+  if (typeof favoriteAddrs !== "undefined" && favoriteAddrs) return favoriteAddrs;
+  return new Set();
+}
+
+function isFavorited(addr, f) {
+  return favoriteSet(f).has(tokenAddrKey(addr));
+}
+
+function isFavFilterOn() {
+  return !!btnFavFilter?.classList.contains("is-on");
+}
+
 function getActiveFilters() {
   const raw = readFilterInputs();
   return {
@@ -550,6 +573,8 @@ function getActiveFilters() {
     daysMin: parseNumber(raw.daysMin),
     daysMax: parseNumber(raw.daysMax),
     name: readNameFilter(),
+    favOnly: isFavFilterOn(),
+    favorites: typeof favoriteAddrs !== "undefined" ? favoriteAddrs : new Set(),
     raw,
   };
 }
@@ -564,7 +589,7 @@ function hasAnyFilter(f) {
     f.countMax,
     f.daysMin,
     f.daysMax,
-  ].some((v) => v != null) || !!(f && String(f.name || "").trim());
+  ].some((v) => v != null) || !!(f && String(f.name || "").trim()) || !!(f && f.favOnly);
 }
 
 function inRange(value, min, max) {
@@ -576,6 +601,9 @@ function inRange(value, min, max) {
 }
 
 function matchesTokenFilters(row, f) {
+  if (f?.favOnly) {
+    if (!isFavorited(row["合约地址"], f)) return false;
+  }
   const q = String(f?.name || "").trim().toLowerCase();
   if (q) {
     const name = String(row["名称"] || row["代币名称"] || "").toLowerCase();
@@ -731,14 +759,28 @@ function debotTokenUrl(addr, platform, chainHint) {
   return `https://debot.ai/token/${encodeURIComponent(chain)}/${encodeURIComponent(token)}`;
 }
 
+function copyAddrButton(row) {
+  const addr = String(row["合约地址"] || "");
+  if (!addr) return "";
+  const addrAttr = addr.replace(/"/g, "&quot;");
+  return `<button type="button" class="copy-addr-btn" data-addr="${addrAttr}" title="复制合约地址" aria-label="复制合约地址">⧉</button>`;
+}
+
+function favButton(row) {
+  const addr = String(row["合约地址"] || "").trim();
+  if (!addr) return "";
+  const on = isFavorited(addr);
+  const addrAttr = addr.replace(/"/g, "&quot;");
+  return `<button type="button" class="fav-btn${on ? " is-on" : ""}" data-addr="${addrAttr}" title="收藏" aria-label="收藏" aria-pressed="${on ? "true" : "false"}">★</button>`;
+}
+
 function nameActionButtons(row) {
   const addr = String(row["合约地址"] || "");
-  const addrAttr = addr.replace(/"/g, "&quot;");
   const url = debotTokenUrl(addr, row["发射平台"], row.debotChain);
   const debot = url
     ? `<a class="debot-link-btn" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" title="在 Debot 打开" aria-label="在 Debot 打开">↗</a>`
     : "";
-  return `<button type="button" class="copy-addr-btn" data-addr="${addrAttr}" title="复制合约地址" aria-label="复制合约地址">⧉</button>${debot}`;
+  return `${favButton(row)}${debot}`;
 }
 
 function renderTable(payload) {
@@ -812,13 +854,18 @@ function renderTable(payload) {
             cls = "holders";
             val = holdersTableText(val);
           }
-          if (c === "合约地址") cls = "addr";
           const title = String(val).replace(/"/g, "&quot;");
           if (c === "名称") {
             const nameHtml = escapeHtml(String(val));
             return `<td class="name-cell" title="${title}">
               ${nameActionButtons(row)}
               <span class="name-text">${nameHtml}</span>
+            </td>`;
+          }
+          if (c === "合约地址") {
+            return `<td class="addr" title="${title}">
+              ${copyAddrButton(row)}
+              <span class="addr-text">${escapeHtml(String(val))}</span>
             </td>`;
           }
           return `<td class="${cls}" title="${title}">${escapeHtml(String(val))}</td>`;
@@ -849,7 +896,7 @@ function renderCards(rows) {
       const chg = row["24h涨跌"] ?? "";
       return `<article class="token-card" data-row-idx="${idx}">
         <div class="token-card-head">
-          ${nameActionButtons(row)}
+          ${copyAddrButton(row)}${nameActionButtons(row)}
           <div class="token-card-name">${escapeHtml(String(row["名称"] ?? ""))}</div>
           <div class="num chg ${chgClass(chg)}">${escapeHtml(String(chg))}</div>
         </div>
@@ -1249,7 +1296,7 @@ function showRowTip(row, tr, clientX, clientY) {
 
   rowTip.innerHTML = `
     <div class="row-tip-line row-tip-name">
-      <span class="row-tip-name-text">${escapeHtml(String(name))}</span>
+      <span class="row-tip-name-left">${favButton(row)}<span class="row-tip-name-text">${escapeHtml(String(name))}</span></span>
       <span class="row-tip-name-meta">${escapeHtml(mcapText)} · ${escapeHtml(volText)} · <span class="num chg ${chgClass(chgText)}">${escapeHtml(chgText)}</span></span>
     </div>
     <div class="row-tip-line"><span class="row-tip-label">平台</span>${escapeHtml(String(platform))}</div>
@@ -1618,6 +1665,47 @@ function applyFilters() {
 function applyNameFilter() {
   if (lastPayload) renderTable(lastPayload);
   else updateFilterSummary(0, 0, hasAnyFilter(getActiveFilters()));
+}
+
+async function loadFavorites() {
+  try {
+    const { res, data } = await fetchJson("/api/favorites");
+    if (res.ok && data.ok) {
+      favoriteAddrs = new Set((data.addrs || []).map(tokenAddrKey));
+    }
+  } catch {
+    favoriteAddrs = new Set();
+  }
+}
+
+function syncFavButtons() {
+  document.querySelectorAll(".fav-btn[data-addr]").forEach((btn) => {
+    const on = isFavorited(btn.getAttribute("data-addr"));
+    btn.classList.toggle("is-on", on);
+    btn.setAttribute("aria-pressed", on ? "true" : "false");
+  });
+}
+
+async function handleFavClick(btn) {
+  const addr = btn.getAttribute("data-addr") || "";
+  const { res, data } = await fetchJson("/api/favorites/toggle", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ addr }),
+  });
+  if (!res.ok || data.ok === false) {
+    throw new Error(data.detail || data.message || "收藏失败");
+  }
+  favoriteAddrs = new Set((data.addrs || []).map(tokenAddrKey));
+  syncFavButtons();
+  if (isFavFilterOn() && lastPayload) renderTable(lastPayload);
+}
+
+function toggleFavFilter() {
+  const on = !isFavFilterOn();
+  btnFavFilter?.classList.toggle("is-on", on);
+  btnFavFilter?.setAttribute("aria-pressed", on ? "true" : "false");
+  applyNameFilter();
 }
 
 function resetFilters() {
@@ -2409,6 +2497,7 @@ btnSaveSettings?.addEventListener("click", () =>
 btnApplyFilter?.addEventListener("click", applyFilters);
 btnResetFilter?.addEventListener("click", resetFilters);
 document.getElementById("flt-name")?.addEventListener("input", applyNameFilter);
+btnFavFilter?.addEventListener("click", toggleFavFilter);
 btnOpenSettings?.addEventListener("click", openSettings);
 btnCloseSettings?.addEventListener("click", closeSettings);
 mobileSort?.addEventListener("click", (e) => {
@@ -2449,6 +2538,13 @@ tbody.addEventListener("click", async (e) => {
     e.stopPropagation();
     return;
   }
+  const fav = e.target.closest(".fav-btn");
+  if (fav) {
+    e.preventDefault();
+    e.stopPropagation();
+    handleFavClick(fav).catch((err) => setJobStatus(String(err), "error"));
+    return;
+  }
   const btn = e.target.closest(".copy-addr-btn");
   if (btn) {
     e.preventDefault();
@@ -2487,6 +2583,13 @@ tbody.addEventListener("click", async (e) => {
 cardList?.addEventListener("click", async (e) => {
   if (e.target.closest(".debot-link-btn")) {
     e.stopPropagation();
+    return;
+  }
+  const fav = e.target.closest(".fav-btn");
+  if (fav) {
+    e.preventDefault();
+    e.stopPropagation();
+    handleFavClick(fav).catch((err) => setJobStatus(String(err), "error"));
     return;
   }
   const btn = e.target.closest(".copy-addr-btn");
@@ -2543,6 +2646,12 @@ document.addEventListener("click", (e) => {
 
 rowTip.addEventListener("click", (e) => {
   e.stopPropagation();
+  const fav = e.target.closest(".fav-btn");
+  if (fav) {
+    e.preventDefault();
+    handleFavClick(fav).catch((err) => setJobStatus(String(err), "error"));
+    return;
+  }
   if (!e.target.closest(".row-tip-close")) return;
   e.preventDefault();
   hideRowTip();
@@ -2579,7 +2688,7 @@ document.addEventListener("visibilitychange", () => {
 
 loadStoredFilters();
 renderSortChips();
-loadSettings().then(() => {
+Promise.all([loadSettings(), loadFavorites()]).then(() => {
   refreshAuthStatus();
   selectBoard(activeBoard);
 });
