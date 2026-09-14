@@ -107,6 +107,7 @@ const sidebarEl = document.getElementById("sidebar");
 const sidebarBackdrop = document.getElementById("sidebar-backdrop");
 const mobileSort = document.getElementById("mobile-sort");
 const fetchStatusEl = document.getElementById("fetch-status");
+const nameFilterInput = document.getElementById("flt-name");
 
 let pollTimer = null;
 let autoRefreshTimer = null;
@@ -533,6 +534,10 @@ function saveStoredFilters(values) {
   }
 }
 
+function readNameFilter() {
+  return (nameFilterInput?.value || "").trim();
+}
+
 function getActiveFilters() {
   const raw = readFilterInputs();
   return {
@@ -544,6 +549,7 @@ function getActiveFilters() {
     countMax: parseNumber(raw.countMax),
     daysMin: parseNumber(raw.daysMin),
     daysMax: parseNumber(raw.daysMax),
+    name: readNameFilter(),
     raw,
   };
 }
@@ -558,7 +564,7 @@ function hasAnyFilter(f) {
     f.countMax,
     f.daysMin,
     f.daysMax,
-  ].some((v) => v != null);
+  ].some((v) => v != null) || !!(f && String(f.name || "").trim());
 }
 
 function inRange(value, min, max) {
@@ -570,6 +576,11 @@ function inRange(value, min, max) {
 }
 
 function matchesTokenFilters(row, f) {
+  const q = String(f?.name || "").trim().toLowerCase();
+  if (q) {
+    const name = String(row["名称"] || row["代币名称"] || "").toLowerCase();
+    if (!name.includes(q)) return false;
+  }
   const mcap = parseNumber(row["市值"]);
   const hold = parseNumber(row["持仓市值"]);
   const count = parseNumber(row["持仓人数"]);
@@ -1598,6 +1609,11 @@ function applyFilters() {
   else updateFilterSummary(0, 0, hasAnyFilter(getActiveFilters()));
 }
 
+function applyNameFilter() {
+  if (lastPayload) renderTable(lastPayload);
+  else updateFilterSummary(0, 0, hasAnyFilter(getActiveFilters()));
+}
+
 function resetFilters() {
   writeFilterInputs({});
   saveStoredFilters({});
@@ -2386,6 +2402,7 @@ btnSaveSettings?.addEventListener("click", () =>
 );
 btnApplyFilter?.addEventListener("click", applyFilters);
 btnResetFilter?.addEventListener("click", resetFilters);
+document.getElementById("flt-name")?.addEventListener("input", applyNameFilter);
 btnOpenSettings?.addEventListener("click", openSettings);
 btnCloseSettings?.addEventListener("click", closeSettings);
 mobileSort?.addEventListener("click", (e) => {

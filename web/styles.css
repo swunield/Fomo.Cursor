@@ -538,6 +538,28 @@ body.settings-open { overflow: hidden; }
   display: none;
 }
 
+.name-filter-input {
+  flex: 0 0 auto;
+  margin-left: auto;
+  width: 180px;
+  max-width: 42vw;
+  background: #0a0e0b;
+  color: var(--text);
+  border: 1px solid var(--line);
+  padding: 8px 10px;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.name-filter-input:focus {
+  outline: none;
+  border-color: #5a7a3a;
+}
+
+.name-filter-input::placeholder {
+  color: var(--muted);
+}
+
 .table-shell {
   position: relative;
   flex: 1;

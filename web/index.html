@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Syne:wght@600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/styles.css?v=20260914b" />
+  <link rel="stylesheet" href="/static/styles.css?v=20260914d" />
 </head>
 <body>
   <div class="grain" aria-hidden="true"></div>
@@ -89,6 +89,15 @@
     <div class="table-toolbar">
       <button id="btn-refresh-board" class="refresh-btn" type="button">刷新</button>
       <div id="fetch-status" class="fetch-status" aria-live="polite"></div>
+      <input
+        id="flt-name"
+        class="name-filter-input"
+        type="search"
+        autocomplete="off"
+        spellcheck="false"
+        placeholder="代币名称"
+        aria-label="按代币名称筛选"
+      />
       <div id="mobile-sort" class="mobile-sort" role="toolbar" aria-label="列排序"></div>
     </div>
 
@@ -200,6 +209,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=20260914c"></script>
+  <script src="/static/app.js?v=20260914d"></script>
 </body>
 </html>
