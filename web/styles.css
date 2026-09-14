@@ -546,14 +546,19 @@ body.settings-open { overflow: hidden; }
   flex: 0 0 auto;
 }
 
-.name-filter-input {
+.name-filter-wrap {
+  position: relative;
   flex: 0 0 auto;
+}
+
+.name-filter-input {
+  display: block;
   width: 180px;
   max-width: 38vw;
   background: #0a0e0b;
   color: var(--text);
   border: 1px solid var(--line);
-  padding: 8px 10px;
+  padding: 8px 28px 8px 10px;
   font-family: var(--mono);
   font-size: 12px;
 }
@@ -565,6 +570,43 @@ body.settings-open { overflow: hidden; }
 
 .name-filter-input::placeholder {
   color: var(--muted);
+}
+
+.name-filter-input::-webkit-search-decoration,
+.name-filter-input::-webkit-search-cancel-button,
+.name-filter-input::-webkit-search-results-button,
+.name-filter-input::-webkit-search-results-decoration {
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.name-filter-clear {
+  appearance: none;
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  display: inline-grid;
+  place-items: center;
+}
+
+.name-filter-clear:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.name-filter-clear.hidden {
+  display: none;
 }
 
 .table-shell {

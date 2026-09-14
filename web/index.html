@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Syne:wght@600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/styles.css?v=20260914h" />
+  <link rel="stylesheet" href="/static/styles.css?v=20260914j" />
 </head>
 <body>
   <div class="grain" aria-hidden="true"></div>
@@ -98,15 +98,24 @@
           aria-label="只看收藏"
           aria-pressed="false"
         >★</button>
-        <input
-          id="flt-name"
-          class="name-filter-input"
-          type="search"
-          autocomplete="off"
-          spellcheck="false"
-          placeholder="代币名称"
-          aria-label="按代币名称筛选"
-        />
+        <div class="name-filter-wrap">
+          <input
+            id="flt-name"
+            class="name-filter-input"
+            type="search"
+            autocomplete="off"
+            spellcheck="false"
+            placeholder="代币名称"
+            aria-label="按代币名称筛选"
+          />
+          <button
+            id="btn-name-filter-clear"
+            class="name-filter-clear hidden"
+            type="button"
+            title="清空"
+            aria-label="清空名称筛选"
+          >×</button>
+        </div>
       </div>
       <div id="mobile-sort" class="mobile-sort" role="toolbar" aria-label="列排序"></div>
     </div>
@@ -219,6 +228,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=20260914i"></script>
+  <script src="/static/app.js?v=20260914j"></script>
 </body>
 </html>

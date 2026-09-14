@@ -39,6 +39,29 @@ assert(src.includes('id="flt-name"') || src.includes("flt-name"), "app.js should
 assert(src.includes("readNameFilter") || src.includes('flt-name'), "name filter reader missing");
 assert(/flt-name[\s\S]{0,180}addEventListener\(\s*["']input["']/.test(src), "name filter should apply while typing");
 
+assert(toolbar.includes('class="name-filter-wrap"'), "clear button wrap should sit around the name input");
+assert(toolbar.includes('id="btn-name-filter-clear"'), "name filter should have an in-input clear button");
+assert(
+  toolbar.indexOf('id="flt-name"') < toolbar.indexOf('id="btn-name-filter-clear"'),
+  "clear button should sit after the name input inside the wrap"
+);
+assert(
+  /btn-name-filter-clear[\s\S]{0,200}class="[^"]*hidden/.test(toolbar) ||
+    /id="btn-name-filter-clear"[^>]*class="[^"]*hidden/.test(toolbar),
+  "clear button starts hidden when the input is empty"
+);
+
+assert(css.includes(".name-filter-wrap"), "name input wrap styles missing");
+assert(css.includes(".name-filter-clear"), "clear button styles missing");
+assert(css.includes("::-webkit-search-cancel-button"), "hide native search cancel to avoid two X buttons");
+assert(src.includes("clearNameFilter"), "clearNameFilter missing");
+assert(src.includes("syncNameFilterClear"), "syncNameFilterClear missing");
+assert(
+  /btn-name-filter-clear[\s\S]{0,220}addEventListener\(\s*["']click["']/.test(src) ||
+    src.includes("nameFilterClearBtn?.addEventListener(\"click\""),
+  "clear button should empty the name input on click"
+);
+
 const start = src.indexOf("function parseNumber(value)");
 const end = src.indexOf("function compareSortValues(");
 if (start < 0 || end < 0 || end <= start) {

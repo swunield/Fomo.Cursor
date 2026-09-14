@@ -108,6 +108,7 @@ const sidebarBackdrop = document.getElementById("sidebar-backdrop");
 const mobileSort = document.getElementById("mobile-sort");
 const fetchStatusEl = document.getElementById("fetch-status");
 const nameFilterInput = document.getElementById("flt-name");
+const nameFilterClearBtn = document.getElementById("btn-name-filter-clear");
 const btnFavFilter = document.getElementById("btn-fav-filter");
 
 let pollTimer = null;
@@ -1707,6 +1708,19 @@ function applyNameFilter() {
   else updateFilterSummary(0, 0, hasAnyFilter(getActiveFilters()));
 }
 
+function syncNameFilterClear() {
+  const has = Boolean(nameFilterInput?.value);
+  nameFilterClearBtn?.classList.toggle("hidden", !has);
+}
+
+function clearNameFilter() {
+  if (!nameFilterInput) return;
+  nameFilterInput.value = "";
+  syncNameFilterClear();
+  applyNameFilter();
+  nameFilterInput.focus();
+}
+
 async function loadFavorites() {
   try {
     const { res, data } = await fetchJson("/api/favorites");
@@ -2540,7 +2554,12 @@ btnApplyFilter?.addEventListener("click", () =>
 btnResetFilter?.addEventListener("click", () =>
   resetFilters().catch((e) => setJobStatus(String(e), "error"))
 );
-document.getElementById("flt-name")?.addEventListener("input", applyNameFilter);
+document.getElementById("flt-name")?.addEventListener("input", () => {
+  syncNameFilterClear();
+  applyNameFilter();
+});
+nameFilterClearBtn?.addEventListener("click", clearNameFilter);
+syncNameFilterClear();
 btnFavFilter?.addEventListener("click", toggleFavFilter);
 btnOpenSettings?.addEventListener("click", openSettings);
 btnCloseSettings?.addEventListener("click", closeSettings);
