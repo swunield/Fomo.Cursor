@@ -3,6 +3,7 @@
   "dayLimit": 50,
   "h24Limit": 50,
   "refreshMinutes": 10,
+  "chartHidden": [],
   "mcapMin": "2M",
   "mcapMax": "800M",
   "holdMin": "20K",

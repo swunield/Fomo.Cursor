@@ -23,6 +23,15 @@ assert(loadFn.includes("writeFilterInputs") || src.includes("function applySetti
 
 const applyUi = src.slice(src.indexOf("function applySettingsToUi("), src.indexOf("function isSettingsOpen("));
 assert(applyUi.includes("writeFilterInputs(") || applyUi.includes("FILTER_FIELDS"), "applySettingsToUi should fill filter inputs");
+assert(
+  applyUi.includes("chartHidden") || applyUi.includes("applyChartHidden("),
+  "applySettingsToUi should restore chart legend hidden keys"
+);
+assert(src.includes("function persistChartHidden("), "legend hidden keys need persistChartHidden");
+assert(
+  src.slice(src.indexOf("function persistChartHidden("), src.indexOf("function persistChartHidden(") + 800).includes("chartHidden"),
+  "persistChartHidden should POST chartHidden"
+);
 
 const resetFn = src.slice(src.indexOf("async function resetFilters("), src.indexOf("async function refreshAuthStatus("));
 assert(

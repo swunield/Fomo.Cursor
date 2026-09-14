@@ -63,6 +63,7 @@ FILTER_KEYS = (
     "daysMax",
 )
 FILTER_TEXT_MAX = 32
+CHART_SERIES_KEYS = ("mcap", "holders", "amount", "holdMcap", "pnl")
 
 SOURCE_BOARD_KEYS = ("all", "7d", "24h")
 
@@ -243,6 +244,20 @@ def empty_filters() -> dict[str, str]:
     return {key: "" for key in FILTER_KEYS}
 
 
+def sanitize_chart_hidden(value: Any) -> list[str]:
+    raw = value
+    if isinstance(value, str):
+        raw = [value]
+    if not isinstance(raw, (list, tuple)):
+        return []
+    seen: set[str] = set()
+    for item in raw:
+        key = str(item or "").strip()
+        if key in CHART_SERIES_KEYS:
+            seen.add(key)
+    return [key for key in CHART_SERIES_KEYS if key in seen]
+
+
 def load_settings() -> dict:
     data = dict(DEFAULT_SETTINGS)
     data.update(empty_filters())
@@ -264,6 +279,7 @@ def load_settings() -> dict:
             data.get("refreshMinutes"),
             DEFAULT_SETTINGS["refreshMinutes"],
         ),
+        "chartHidden": sanitize_chart_hidden(data.get("chartHidden")),
     }
     for key in FILTER_KEYS:
         out[key] = sanitize_filter_text(data.get(key, ""))
@@ -276,6 +292,7 @@ def save_settings(
     h24_limit: Any = None,
     refresh_minutes: Any = None,
     filters: dict | None = None,
+    chart_hidden: Any = None,
 ) -> dict:
     cur = load_settings()
     if all_limit is not None:
@@ -292,6 +309,8 @@ def save_settings(
         for key in FILTER_KEYS:
             if key in filters and filters[key] is not None:
                 cur[key] = sanitize_filter_text(filters[key])
+    if chart_hidden is not None:
+        cur["chartHidden"] = sanitize_chart_hidden(chart_hidden)
     SETTINGS_PATH.write_text(
         json.dumps(cur, ensure_ascii=False, indent=2), encoding="utf-8"
     )

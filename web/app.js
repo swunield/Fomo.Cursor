@@ -362,6 +362,9 @@ function applySettingsToUi(s) {
     if (s && Object.prototype.hasOwnProperty.call(s, f.key)) filters[f.key] = s[f.key] || "";
   }
   if (Object.keys(filters).length) writeFilterInputs(filters);
+  if (s && Object.prototype.hasOwnProperty.call(s, "chartHidden")) {
+    applyChartHidden(s.chartHidden);
+  }
   updateSettingsHint();
   scheduleAutoRefresh();
 }
@@ -497,6 +500,48 @@ function fmtSignedKm(value) {
   return text;
 }
 
+function roundHalfUp(num, digits) {
+  const factor = 10 ** digits;
+  if (num >= 0) return Math.floor(num * factor + 0.5) / factor;
+  return -Math.floor(-num * factor + 0.5) / factor;
+}
+
+function fmtPercent(value, signed = false) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return "";
+  const mag = Math.abs(num);
+  const digits = mag < 10 ? 2 : mag < 100 ? 1 : 0;
+  let text = roundHalfUp(num, digits).toFixed(digits);
+  if (signed && !text.startsWith("-")) text = `+${text}`;
+  return `${text}%`;
+}
+
+function fmtChange24(value) {
+  if (value == null || value === "") return "";
+  let text = String(value).trim();
+  if (!text) return "";
+  if (text === "—") return "—";
+  let hadPct = false;
+  if (text.endsWith("%")) {
+    hadPct = true;
+    text = text.slice(0, -1);
+  }
+  const num = Number(text);
+  if (!Number.isFinite(num)) return String(value).trim();
+  let pct = num;
+  if (!hadPct && Math.abs(num) <= 1.5) pct = num * 100;
+  return fmtPercent(pct, true);
+}
+
+function rewritePercentsInText(text) {
+  if (text == null || text === "") return text == null ? "" : String(text);
+  return String(text).replace(/([+\-]?)(\d+(?:\.\d+)?)%/g, (full, sign, raw) => {
+    const n = Number(raw);
+    if (!Number.isFinite(n)) return full;
+    return fmtPercent(sign === "-" ? -n : n, Boolean(sign));
+  });
+}
+
 function fmtHoldingWithMcapPct(holdingValue, marketCap) {
   const holding = parseNumber(holdingValue);
   if (holding == null) {
@@ -506,11 +551,7 @@ function fmtHoldingWithMcapPct(holdingValue, marketCap) {
   const mcap = parseNumber(marketCap);
   if (!mcap || mcap <= 0) return `${valueText}(-)`;
   const pct = (holding / mcap) * 100;
-  let pctText;
-  if (pct >= 10) pctText = `${pct.toFixed(1)}%`;
-  else if (pct >= 1) pctText = `${pct.toFixed(2)}%`;
-  else pctText = `${pct.toFixed(3)}%`;
-  return `${valueText}(${pctText})`;
+  return `${valueText}(${fmtPercent(pct)})`;
 }
 
 function readFilterInputs() {
@@ -882,6 +923,10 @@ function renderTable(payload) {
           let val = row[c] ?? "";
           if (c === "创建时间") val = shortenTime(val);
           if (c === "天数") val = fmtAgeDays(row["创建时间"]) || val;
+          if (c === "24h涨跌") val = fmtChange24(val) || val;
+          if (c === "持仓市值" || c === "最高持仓市值" || c === "最低持仓市值") {
+            val = rewritePercentsInText(val);
+          }
           let cls = "";
           if (NUM_COLS.has(c)) cls = "num";
           if (c === "24h涨跌" || c === "持仓盈亏") {
@@ -893,7 +938,7 @@ function renderTable(payload) {
           }
           if (c === "所有持仓人") {
             cls = "holders";
-            val = holdersTableText(val);
+            val = holdersTableText(rewritePercentsInText(val));
           }
           const title = String(val).replace(/"/g, "&quot;");
           if (c === "名称") {
@@ -934,7 +979,7 @@ function renderCards(rows) {
   cardList.classList.remove("hidden");
   cardList.innerHTML = rows
     .map((row, idx) => {
-      const chg = row["24h涨跌"] ?? "";
+      const chg = fmtChange24(row["24h涨跌"] ?? "") || row["24h涨跌"] || "";
       return `<article class="token-card" data-row-idx="${idx}">
         <div class="token-card-head">
           ${favButton(row)}${copyAddrButton(row)}${debotLinkButton(row)}
@@ -946,7 +991,7 @@ function renderCards(rows) {
           <div class="token-card-item"><dt>成交量</dt><dd>${escapeHtml(String(row["成交量"] ?? "—"))}</dd></div>
           <div class="token-card-item"><dt>天数</dt><dd>${escapeHtml(fmtAgeDays(row["创建时间"]) || "—")}</dd></div>
           <div class="token-card-item"><dt>持仓人数</dt><dd>${escapeHtml(String(row["持仓人数"] ?? "—"))}</dd></div>
-          <div class="token-card-item"><dt>持仓市值</dt><dd>${escapeHtml(String(row["持仓市值"] ?? "—"))}</dd></div>
+          <div class="token-card-item"><dt>持仓市值</dt><dd>${escapeHtml(rewritePercentsInText(String(row["持仓市值"] ?? "—")))}</dd></div>
           <div class="token-card-item"><dt>持仓盈亏</dt><dd class="num chg ${chgClass(row["持仓盈亏"])}">${escapeHtml(String(row["持仓盈亏"] ?? "—"))}</dd></div>
         </dl>
         <p class="token-card-holders">${escapeHtml(holdersTableText(row["所有持仓人"]))}</p>
@@ -1045,8 +1090,8 @@ function renderHolderTipRow(line) {
   else if (n != null && n < 0) pnlCls = "tip-col tip-pnl chg-down";
   return `<div class="row-tip-holder-row">
     <span class="tip-col tip-who">${escapeHtml(parts.who)}</span>
-    <span class="tip-col tip-hold">${escapeHtml(parts.hold)}</span>
-    <span class="${pnlCls}">${escapeHtml(parts.pnl)}</span>
+    <span class="tip-col tip-hold">${escapeHtml(rewritePercentsInText(parts.hold))}</span>
+    <span class="${pnlCls}">${escapeHtml(rewritePercentsInText(parts.pnl))}</span>
     <span class="tip-col tip-dur">${escapeHtml(parts.dur)}</span>
     <span class="tip-col tip-upd">${escapeHtml(parts.upd)}</span>
   </div>`;
@@ -1312,7 +1357,7 @@ function showRowTip(row, tr, clientX, clientY) {
       : "—";
   const holdMcap =
     row["持仓市值"] != null && String(row["持仓市值"]).trim() !== ""
-      ? String(row["持仓市值"]).trim()
+      ? rewritePercentsInText(String(row["持仓市值"]).trim())
       : "—";
   const holdPnl =
     row["持仓盈亏"] != null && String(row["持仓盈亏"]).trim() !== ""
@@ -1333,7 +1378,7 @@ function showRowTip(row, tr, clientX, clientY) {
   const addr = String(row["合约地址"] || "").trim();
   const mcapText = String(row["市值"] ?? "").trim() || "—";
   const volText = String(row["成交量"] ?? "").trim() || "—";
-  const chgText = String(row["24h涨跌"] ?? "").trim() || "—";
+  const chgText = fmtChange24(String(row["24h涨跌"] ?? "").trim()) || String(row["24h涨跌"] ?? "").trim() || "—";
 
   rowTip.innerHTML = `
     <div class="row-tip-line row-tip-name">
@@ -1352,12 +1397,15 @@ function showRowTip(row, tr, clientX, clientY) {
     </div>
     <div class="row-tip-chart" data-addr="${escapeHtml(addr)}">
       <div class="row-tip-chart-head">
-        <span>持仓轨迹</span>
-        <button type="button" class="row-tip-chart-refresh" data-addr="${escapeHtml(addr)}">刷新</button>
+        <span class="row-tip-chart-title">持仓轨迹<span class="row-tip-chart-cursor-time"></span></span>
+        <span class="row-tip-chart-head-right">
+          <span class="row-tip-chart-fetched"></span>
+          <span class="row-tip-chart-status">无缓存</span>
+          <button type="button" class="row-tip-chart-refresh" data-addr="${escapeHtml(addr)}">刷新</button>
+        </span>
       </div>
       <canvas class="row-tip-chart-canvas" width="640" height="180"></canvas>
       <div class="row-tip-chart-legend"></div>
-      <div class="row-tip-chart-status">无缓存</div>
     </div>
     <button type="button" class="row-tip-close">关闭</button>
   `;
@@ -1392,10 +1440,40 @@ const TOKEN_CHART_LABELS = {
 
 const TOKEN_CHART_HIDDEN = new Set();
 
+function chartHiddenList() {
+  return TOKEN_CHART_KEYS.filter((key) => TOKEN_CHART_HIDDEN.has(key));
+}
+
+function applyChartHidden(keys) {
+  TOKEN_CHART_HIDDEN.clear();
+  if (!Array.isArray(keys)) return;
+  for (const key of keys) {
+    if (TOKEN_CHART_KEYS.includes(key)) TOKEN_CHART_HIDDEN.add(key);
+  }
+}
+
+async function persistChartHidden() {
+  try {
+    const res = await fetch("/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chartHidden: chartHiddenList() }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.ok) return;
+    if (Object.prototype.hasOwnProperty.call(data, "chartHidden")) {
+      applyChartHidden(data.chartHidden);
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
 function toggleTokenChartKey(key) {
   if (!TOKEN_CHART_KEYS.includes(key)) return false;
   if (TOKEN_CHART_HIDDEN.has(key)) TOKEN_CHART_HIDDEN.delete(key);
   else TOKEN_CHART_HIDDEN.add(key);
+  persistChartHidden();
   return true;
 }
 
@@ -1405,7 +1483,56 @@ function chartAxisTimeLabel(val) {
   return m ? `${m[2]} ${m[3]}` : full;
 }
 
-function drawTokenChart(canvas, series) {
+const TOKEN_CHART_LONG_PRESS_MS = 400;
+const TOKEN_CHART_SCRUB_PX = 8;
+
+function chartPlotRect(width, height) {
+  return { left: 10, right: width - 10, top: 8, bottom: height - 22 };
+}
+
+function chartXPositions(series, width) {
+  const points = Array.isArray(series) ? series : [];
+  const { left, right } = chartPlotRect(width, 180);
+  if (!points.length) return [];
+  if (points.length === 1) return [left];
+  const times = points.map((p) => createdAtMs(p?.t));
+  const timed = times.every((t) => t > 0);
+  const tMin = timed ? Math.min(...times) : 0;
+  const tMax = timed ? Math.max(...times) : 0;
+  return points.map((_, i) => {
+    if (timed && tMax > tMin) {
+      return left + ((right - left) * (times[i] - tMin)) / (tMax - tMin);
+    }
+    return left + ((right - left) * i) / (points.length - 1);
+  });
+}
+
+function nearestChartIndex(series, x, width) {
+  const xs = chartXPositions(series, width);
+  if (!xs.length) return null;
+  let best = 0;
+  let bestDist = Infinity;
+  for (let i = 0; i < xs.length; i++) {
+    const d = Math.abs(xs[i] - x);
+    if (d < bestDist) {
+      bestDist = d;
+      best = i;
+    }
+  }
+  return best;
+}
+
+function clampChartCursor(series, index) {
+  if (index == null || !Number.isFinite(Number(index))) return null;
+  const points = Array.isArray(series) ? series : [];
+  if (!points.length) return null;
+  const i = Math.round(Number(index));
+  if (i < 0) return 0;
+  if (i >= points.length) return points.length - 1;
+  return i;
+}
+
+function drawTokenChart(canvas, series, cursorIndex) {
   if (!canvas) return;
   const ctx = canvas.getContext("2d");
   if (!ctx) return;
@@ -1414,10 +1541,7 @@ function drawTokenChart(canvas, series) {
   ctx.clearRect(0, 0, w, h);
   ctx.fillStyle = "#0d120f";
   ctx.fillRect(0, 0, w, h);
-  const left = 10;
-  const right = w - 10;
-  const top = 8;
-  const bottom = h - 22;
+  const { left, right, top, bottom } = chartPlotRect(w, h);
   ctx.strokeStyle = "#2a3a2c";
   ctx.lineWidth = 1;
   ctx.beginPath();
@@ -1426,17 +1550,7 @@ function drawTokenChart(canvas, series) {
   ctx.lineTo(right, bottom);
   ctx.stroke();
   const points = Array.isArray(series) ? series : [];
-  const times = points.map((p) => createdAtMs(p?.t));
-  const timed = times.every((t) => t > 0);
-  const tMin = timed ? Math.min(...times) : 0;
-  const tMax = timed ? Math.max(...times) : 0;
-  const xAt = (i) => {
-    if (points.length < 2) return left;
-    if (timed && tMax > tMin) {
-      return left + ((right - left) * (times[i] - tMin)) / (tMax - tMin);
-    }
-    return left + ((right - left) * i) / (points.length - 1);
-  };
+  const xs = chartXPositions(points, w);
   if (points.length) {
     const tickIdx =
       points.length === 1 ? [0] : points.length === 2 ? [0, 1] : [0, Math.floor((points.length - 1) / 2), points.length - 1];
@@ -1445,56 +1559,83 @@ function drawTokenChart(canvas, series) {
     tickIdx.forEach((i, n) => {
       const label = chartAxisTimeLabel(points[i]?.t);
       if (!label) return;
-      const x = xAt(i);
+      const x = xs[i];
       ctx.textAlign = n === 0 ? "left" : n === tickIdx.length - 1 ? "right" : "center";
       ctx.fillText(label, x, h - 6);
     });
   }
-  if (points.length < 2) return;
-  for (const key of TOKEN_CHART_KEYS) {
-    if (TOKEN_CHART_HIDDEN.has(key)) continue;
-    let min = Infinity;
-    let max = -Infinity;
-    for (const p of points) {
-      const v = Number(p[key]);
-      if (!Number.isFinite(v)) continue;
-      if (v < min) min = v;
-      if (v > max) max = v;
-    }
-    if (!Number.isFinite(min) || !Number.isFinite(max)) continue;
-    if (min === max) {
-      min -= 1;
-      max += 1;
-    }
-    ctx.strokeStyle = TOKEN_CHART_COLORS[key];
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    let started = false;
-    points.forEach((p, i) => {
-      const v = Number(p[key]);
-      if (!Number.isFinite(v)) return;
-      const y = bottom - ((v - min) / (max - min)) * (bottom - top);
-      const x = xAt(i);
-      if (!started) {
-        ctx.moveTo(x, y);
-        started = true;
-      } else {
-        ctx.lineTo(x, y);
+  if (points.length >= 2) {
+    for (const key of TOKEN_CHART_KEYS) {
+      if (TOKEN_CHART_HIDDEN.has(key)) continue;
+      let min = Infinity;
+      let max = -Infinity;
+      for (const p of points) {
+        const v = Number(p[key]);
+        if (!Number.isFinite(v)) continue;
+        if (v < min) min = v;
+        if (v > max) max = v;
       }
-    });
-    if (started) ctx.stroke();
+      if (!Number.isFinite(min) || !Number.isFinite(max)) continue;
+      if (min === max) {
+        min -= 1;
+        max += 1;
+      }
+      ctx.strokeStyle = TOKEN_CHART_COLORS[key];
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      let started = false;
+      points.forEach((p, i) => {
+        const v = Number(p[key]);
+        if (!Number.isFinite(v)) return;
+        const y = bottom - ((v - min) / (max - min)) * (bottom - top);
+        const x = xs[i];
+        if (!started) {
+          ctx.moveTo(x, y);
+          started = true;
+        } else {
+          ctx.lineTo(x, y);
+        }
+      });
+      if (started) ctx.stroke();
+    }
   }
+  const cursor = clampChartCursor(points, cursorIndex);
+  if (cursor == null || xs[cursor] == null) return;
+  ctx.save();
+  ctx.strokeStyle = "rgba(232, 240, 230, 0.7)";
+  ctx.lineWidth = 1;
+  ctx.setLineDash([4, 3]);
+  ctx.beginPath();
+  ctx.moveTo(xs[cursor], bottom);
+  ctx.lineTo(xs[cursor], top);
+  ctx.stroke();
+  ctx.restore();
 }
 
 function redrawTipChart(els) {
   const series = els?.box?._series || [];
-  if (els?.canvas) drawTokenChart(els.canvas, series);
-  if (els?.legend) els.legend.innerHTML = formatChartLegend(series);
+  const cursor = els?.box?._cursorIndex;
+  if (els?.canvas) drawTokenChart(els.canvas, series, cursor);
+  if (els?.legend) els.legend.innerHTML = formatChartLegend(series, cursor);
+  if (els?.cursorTime) {
+    const time = cursorTimeLabel(series, cursor);
+    els.cursorTime.textContent = time;
+  }
 }
 
-function formatChartLegend(series) {
+function cursorTimeLabel(series, cursorIndex) {
+  if (cursorIndex == null) return "";
   const points = Array.isArray(series) ? series : [];
-  const last = points.length ? points[points.length - 1] : null;
+  const idx = clampChartCursor(points, cursorIndex);
+  const last = idx == null ? null : points[idx];
+  return last ? chartAxisTimeLabel(last.t) : "";
+}
+
+function formatChartLegend(series, cursorIndex) {
+  const points = Array.isArray(series) ? series : [];
+  const pinned = cursorIndex != null;
+  const idx = pinned ? clampChartCursor(points, cursorIndex) : points.length ? points.length - 1 : null;
+  const last = idx == null ? null : points[idx];
   return TOKEN_CHART_KEYS.map((key) => {
     const color = TOKEN_CHART_COLORS[key];
     const label = TOKEN_CHART_LABELS[key];
@@ -1514,6 +1655,8 @@ function tipChartEls(row) {
     box,
     canvas: box.querySelector(".row-tip-chart-canvas"),
     legend: box.querySelector(".row-tip-chart-legend"),
+    cursorTime: box.querySelector(".row-tip-chart-cursor-time"),
+    fetched: box.querySelector(".row-tip-chart-fetched"),
     status: box.querySelector(".row-tip-chart-status"),
     button: box.querySelector(".row-tip-chart-refresh"),
   };
@@ -1525,6 +1668,11 @@ function tipChartMissingHint(data) {
   return "";
 }
 
+function tipChartFetchedText(data) {
+  if (!data?.lastFetchedAt) return "";
+  return shortenTime(data.lastFetchedAt) || String(data.lastFetchedAt);
+}
+
 function tipChartStatusText(data, series) {
   const points = Array.isArray(series) ? series : [];
   const parts = [];
@@ -1534,13 +1682,11 @@ function tipChartStatusText(data, series) {
     parts.push(`已拉 ${fetched}/${total}`);
   } else if (!points.length) {
     parts.push("无缓存");
-  } else if (data?.lastFetchedAt) {
-    parts.push(String(data.lastFetchedAt));
   }
   const hint = tipChartMissingHint(data);
   if (hint && !parts.includes(hint)) parts.push(hint);
   if (data?.error) parts.push(String(data.error));
-  return parts.filter(Boolean).join(" · ") || "无缓存";
+  return parts.filter(Boolean).join(" · ");
 }
 
 function applyTipChartData(row, data, fallbackSeries) {
@@ -1548,9 +1694,12 @@ function applyTipChartData(row, data, fallbackSeries) {
   const fallback = fallbackSeries || [];
   let series = Array.isArray(data?.series) ? data.series : fallback;
   if (data?.error && (!series || !series.length) && fallback.length) series = fallback;
-  if (els.box) els.box._series = series;
-  if (els.canvas) drawTokenChart(els.canvas, series);
-  if (els.legend) els.legend.innerHTML = formatChartLegend(series);
+  if (els.box) {
+    els.box._series = series;
+    els.box._cursorIndex = clampChartCursor(series, els.box._cursorIndex);
+  }
+  redrawTipChart(els);
+  if (els.fetched) els.fetched.textContent = tipChartFetchedText(data);
   if (els.status) els.status.textContent = tipChartStatusText(data, series);
   return series;
 }
@@ -1571,7 +1720,7 @@ async function pollTipTokenChart(row, gen) {
       if (gen !== tipChartGen) return;
       const els = tipChartEls(row);
       if (els.status) els.status.textContent = networkErrorMessage(e) || "请求失败";
-      if (els.canvas) drawTokenChart(els.canvas, els.box?._series || []);
+      redrawTipChart(els);
       return data;
     }
     if (gen !== tipChartGen) return;
@@ -1599,8 +1748,7 @@ async function refreshTipTokenChart(row) {
     const err = data?.error || data?.detail || (res && !res.ok ? `HTTP ${res.status}` : "");
     if (err && !data?.started && !data?.running) {
       if (els.status) els.status.textContent = String(err);
-      if (els.canvas) drawTokenChart(els.canvas, oldSeries);
-      if (els.legend) els.legend.innerHTML = formatChartLegend(oldSeries);
+      redrawTipChart(els);
       return;
     }
     if (data?.started || data?.running) {
@@ -1612,8 +1760,7 @@ async function refreshTipTokenChart(row) {
   } catch (e) {
     if (gen !== tipChartGen) return;
     if (els.status) els.status.textContent = networkErrorMessage(e) || "刷新失败";
-    if (els.canvas) drawTokenChart(els.canvas, oldSeries);
-    if (els.legend) els.legend.innerHTML = formatChartLegend(oldSeries);
+    redrawTipChart(els);
   } finally {
     if (gen === tipChartGen) {
       const live = tipChartEls(row);
@@ -1627,7 +1774,9 @@ function loadTipTokenChart(row) {
   const addr = String(row?.["合约地址"] || "").trim();
   if (!addr) {
     const els = tipChartEls(row);
-    if (els.canvas) drawTokenChart(els.canvas, []);
+    if (els.box) els.box._series = [];
+    redrawTipChart(els);
+    if (els.fetched) els.fetched.textContent = "";
     if (els.status) els.status.textContent = "无缓存";
     return;
   }
@@ -1641,14 +1790,18 @@ function loadTipTokenChart(row) {
       if (gen !== tipChartGen) return;
       const els = tipChartEls(row);
       if (els.status) els.status.textContent = networkErrorMessage(e) || "请求失败";
-      if (els.canvas) drawTokenChart(els.canvas, []);
+      redrawTipChart(els);
     }
   })();
 }
 
 function bindTipChart(row) {
   const els = tipChartEls(row);
-  if (els.canvas) drawTokenChart(els.canvas, []);
+  if (els.box) {
+    els.box._series = els.box._series || [];
+    els.box._cursorIndex = null;
+  }
+  redrawTipChart(els);
   if (els.button) {
     els.button.addEventListener("click", (e) => {
       e.preventDefault();
@@ -1666,7 +1819,100 @@ function bindTipChart(row) {
       redrawTipChart(els);
     });
   }
+  bindTipChartCursor(els);
   loadTipTokenChart(row);
+}
+
+function canvasXFromEvent(canvas, e) {
+  const rect = canvas.getBoundingClientRect();
+  if (!rect.width) return 0;
+  return ((e.clientX - rect.left) / rect.width) * canvas.width;
+}
+
+function bindTipChartCursor(els) {
+  const canvas = els.canvas;
+  if (!canvas) return;
+  let pressTimer = 0;
+  let scrubbing = false;
+  let startX = 0;
+  let lastX = 0;
+  let pointerId = null;
+
+  function clearPressTimer() {
+    if (pressTimer) {
+      clearTimeout(pressTimer);
+      pressTimer = 0;
+    }
+  }
+
+  function pinAt(x) {
+    const series = els.box?._series || [];
+    const idx = nearestChartIndex(series, x, canvas.width);
+    if (idx == null || !els.box) return;
+    els.box._cursorIndex = idx;
+    redrawTipChart(els);
+  }
+
+  function onPointerDown(e) {
+    if (e.pointerType === "mouse" && e.button !== 0) return;
+    if (!(els.box?._series || []).length) return;
+    e.preventDefault();
+    e.stopPropagation();
+    pointerId = e.pointerId;
+    try {
+      canvas.setPointerCapture(pointerId);
+    } catch {
+      /* ignore */
+    }
+    startX = canvasXFromEvent(canvas, e);
+    lastX = startX;
+    scrubbing = false;
+    clearPressTimer();
+    pressTimer = setTimeout(() => {
+      scrubbing = true;
+      pinAt(lastX);
+    }, TOKEN_CHART_LONG_PRESS_MS);
+  }
+
+  function onPointerMove(e) {
+    if (pointerId == null || e.pointerId !== pointerId) return;
+    e.preventDefault();
+    e.stopPropagation();
+    lastX = canvasXFromEvent(canvas, e);
+    if (!scrubbing && Math.abs(lastX - startX) >= TOKEN_CHART_SCRUB_PX) {
+      scrubbing = true;
+      clearPressTimer();
+    }
+    if (scrubbing) pinAt(lastX);
+  }
+
+  function endPointer(e) {
+    if (pointerId == null || (e.pointerId != null && e.pointerId !== pointerId)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    clearPressTimer();
+    lastX = canvasXFromEvent(canvas, e);
+    if (scrubbing) pinAt(lastX);
+    else if (els.box) {
+      if (els.box._cursorIndex == null) pinAt(lastX);
+      else {
+        els.box._cursorIndex = null;
+        redrawTipChart(els);
+      }
+    }
+    scrubbing = false;
+    try {
+      canvas.releasePointerCapture(pointerId);
+    } catch {
+      /* ignore */
+    }
+    pointerId = null;
+  }
+
+  canvas.addEventListener("pointerdown", onPointerDown);
+  canvas.addEventListener("pointermove", onPointerMove);
+  canvas.addEventListener("pointerup", endPointer);
+  canvas.addEventListener("pointercancel", endPointer);
 }
 
 async function copyText(text) {

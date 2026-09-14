@@ -3,6 +3,7 @@
 import csv
 import http.client
 import json
+import math
 import re
 import ssl
 import time
@@ -511,6 +512,50 @@ def parse_number(value):
         return None
 
 
+def _round_half_up(num: float, digits: int) -> float:
+    factor = 10 ** digits
+    if num >= 0:
+        return math.floor(num * factor + 0.5) / factor
+    return -math.floor(-num * factor + 0.5) / factor
+
+
+def fmt_percent(value, signed=False) -> str:
+    try:
+        num = float(value)
+    except (TypeError, ValueError):
+        return ""
+    mag = abs(num)
+    if mag < 10:
+        digits = 2
+    elif mag < 100:
+        digits = 1
+    else:
+        digits = 0
+    rounded = _round_half_up(num, digits)
+    spec = f"+.{digits}f" if signed else f".{digits}f"
+    return f"{rounded:{spec}}%"
+
+
+_PCT_IN_TEXT_RE = re.compile(r"([+\-]?)(\d+(?:\.\d+)?)%")
+
+
+def rewrite_percents_in_text(text) -> str:
+    if text in (None, ""):
+        return "" if text in (None, "") else str(text)
+
+    def repl(m):
+        sign, raw = m.group(1), m.group(2)
+        try:
+            num = float(raw)
+        except (TypeError, ValueError):
+            return m.group(0)
+        if sign == "-":
+            num = -num
+        return fmt_percent(num, signed=bool(sign))
+
+    return _PCT_IN_TEXT_RE.sub(repl, str(text))
+
+
 def fmt_km(value):
     num = parse_number(value)
     if num is None:
@@ -525,26 +570,29 @@ def fmt_km(value):
 
 
 def fmt_change24(value):
-    """Format FOMO change24 (ratio or percent) as +12.34% / -5.67%."""
+    """Format FOMO change24 as signed percent with magnitude-based decimals."""
     if value is None or value == "":
         return ""
+    had_pct = False
     if isinstance(value, str):
         text = value.strip()
+        if not text:
+            return ""
         if text.endswith("%"):
-            return text
+            had_pct = True
+            text = text[:-1]
         try:
             num = float(text)
         except ValueError:
-            return text
+            return value.strip()
     else:
         try:
             num = float(value)
         except (TypeError, ValueError):
             return str(value)
-    # FOMO tokenFilterResult.change24 is typically a ratio like -0.21
-    if abs(num) <= 1.5:
+    if not had_pct and abs(num) <= 1.5:
         num *= 100.0
-    return f"{num:+.2f}%"
+    return fmt_percent(num, signed=True)
 
 
 def fmt_holding_with_mcap_pct(holding_value, market_cap):
@@ -556,13 +604,7 @@ def fmt_holding_with_mcap_pct(holding_value, market_cap):
     if not mcap or mcap <= 0:
         return f"{value_text}(-)"
     pct = holding / mcap * 100
-    if pct >= 10:
-        pct_text = f"{pct:.1f}%"
-    elif pct >= 1:
-        pct_text = f"{pct:.2f}%"
-    else:
-        pct_text = f"{pct:.3f}%"
-    return f"{value_text}({pct_text})"
+    return f"{value_text}({fmt_percent(pct)})"
 
 
 def fmt_signed_km(value):
@@ -640,7 +682,7 @@ def fmt_pnl_with_pct(pnl_usd, pnl_pct) -> str:
         pct = float(pnl_pct)
     except (TypeError, ValueError):
         return amt
-    return f"{amt}({pct:+.2f}%)"
+    return f"{amt}({fmt_percent(pct, signed=True)})"
 
 
 def _parse_dt(value):
@@ -882,6 +924,10 @@ def normalize_row_display(row, now=None):
     for col in HOLDING_VALUE_COLS:
         if col in row:
             row[col] = fmt_holding_with_mcap_pct(row.get(col), mcap)
+    if isinstance(row.get("持仓明细"), list):
+        row["持仓明细"] = [rewrite_percents_in_text(x) for x in row["持仓明细"]]
+    if row.get("所有持仓人") not in (None, ""):
+        row["所有持仓人"] = rewrite_percents_in_text(row.get("所有持仓人"))
     created_raw = row.get("创建时间")
     if "创建时间" in row:
         row["创建时间"] = fmt_created_at_local(created_raw)

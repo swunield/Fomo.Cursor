@@ -88,4 +88,23 @@ assertEqual(matchesTokenFilters(ember, { name: "emb", daysMin: 9 }), false, "nam
 assert(hasAnyFilter({ name: "emb" }), "name-only counts as active filter");
 assert(!hasAnyFilter({ name: "   " }), "blank name is not a filter");
 
+const media = css.indexOf("@media (max-width: 860px)");
+assert(media >= 0, "mobile media query missing");
+const mobile = css.slice(media);
+const mobileInput = mobile.slice(
+  mobile.indexOf(".name-filter-input"),
+  mobile.indexOf(".name-filter-input") + 220
+);
+assert(mobile.indexOf(".name-filter-input") >= 0, "mobile name filter width missing");
+assert(/width:\s*135px/.test(mobileInput), "mobile name input should be 3/4 of 180px");
+assert(/max-width:\s*28\.5vw/.test(mobileInput), "mobile name input max-width should be 3/4 of 38vw");
+
+const mobileStatus = mobile.slice(
+  mobile.indexOf(".fetch-status"),
+  mobile.indexOf(".fetch-status") + 280
+);
+assert(mobile.indexOf(".fetch-status") >= 0, "mobile fetch-status styles missing");
+assert(/font-size:\s*10px/.test(mobileStatus), "mobile fetch-status font should shrink");
+assert(/-webkit-line-clamp:\s*2/.test(mobileStatus), "mobile fetch-status should clamp to two lines");
+
 console.log("ok");

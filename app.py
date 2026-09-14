@@ -90,6 +90,7 @@ class SettingsPayload(BaseModel):
     countMax: str | None = None
     daysMin: str | None = None
     daysMax: str | None = None
+    chartHidden: list[str] | None = None
 
 
 class TokenChartHolder(BaseModel):
@@ -157,9 +158,11 @@ def _run_job(mode: str, board: str, limit: int | None = None) -> None:
 def _format_display_rows(rows):
     from update_token_marketcap import (
         fmt_created_at_local,
+        fmt_change24,
         fmt_holding_pnl,
         fmt_holding_with_mcap_pct,
         fmt_token_age_days,
+        rewrite_percents_in_text,
         sum_pnl_from_holder_text,
     )
 
@@ -173,10 +176,22 @@ def _format_display_rows(rows):
         if created_raw not in (None, ""):
             copied["创建时间"] = fmt_created_at_local(created_raw)
             copied["天数"] = fmt_token_age_days(created_raw)
+        if copied.get("24h涨跌") not in (None, ""):
+            copied["24h涨跌"] = fmt_change24(copied.get("24h涨跌"))
         if copied.get("持仓市值") not in (None, ""):
             copied["持仓市值"] = fmt_holding_with_mcap_pct(
                 copied.get("持仓市值"), copied.get("市值")
             )
+        for col in ("最高持仓市值", "最低持仓市值"):
+            if copied.get(col) not in (None, ""):
+                copied[col] = rewrite_percents_in_text(copied.get(col))
+        if copied.get("所有持仓人") not in (None, ""):
+            copied["所有持仓人"] = rewrite_percents_in_text(copied.get("所有持仓人"))
+        details = copied.get("持仓明细")
+        if isinstance(details, list):
+            copied["持仓明细"] = [rewrite_percents_in_text(x) for x in details]
+        elif details not in (None, ""):
+            copied["持仓明细"] = rewrite_percents_in_text(details)
         if copied.get("持仓盈亏") in (None, ""):
             filled = sum_pnl_from_holder_text(
                 copied.get("持仓明细") or copied.get("所有持仓人")
@@ -322,6 +337,7 @@ def api_settings_save(payload: SettingsPayload):
         h24_limit=payload.h24Limit,
         refresh_minutes=payload.refreshMinutes,
         filters=filters or None,
+        chart_hidden=payload.chartHidden,
     )
     return {
         "ok": True,

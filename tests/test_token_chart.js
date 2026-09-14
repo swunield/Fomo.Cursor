@@ -6,6 +6,12 @@ function assert(cond, label) {
   if (!cond) throw new Error(label);
 }
 
+function assertEqual(actual, expected, label) {
+  if (actual !== expected) {
+    throw new Error(`${label}: got ${JSON.stringify(actual)}, expected ${JSON.stringify(expected)}`);
+  }
+}
+
 assert(src.includes("function drawTokenChart("), "drawTokenChart missing");
 assert(src.includes("function loadTipTokenChart("), "loadTipTokenChart missing");
 assert(src.includes("function refreshTipTokenChart("), "refreshTipTokenChart missing");
@@ -63,11 +69,38 @@ const fetchAt = pollFn.indexOf("await fetchTipTokenChart");
 const genGuardAt = pollFn.indexOf("if (gen !== tipChartGen) return", fetchAt);
 assert(fetchAt >= 0 && genGuardAt > fetchAt, "pollTipTokenChart must abort after fetch if gen changed");
 
+eval(src.slice(src.indexOf("function tipChartMissingHint("), src.indexOf("function applyTipChartData(")));
+assert(src.includes("function tipChartFetchedText("), "tipChartFetchedText missing");
+assert(
+  src.slice(src.indexOf("function tipChartFetchedText("), src.indexOf("function applyTipChartData(")).includes("shortenTime("),
+  "fetched time next to refresh should use Shanghai time"
+);
+assertEqual(
+  tipChartFetchedText({ lastFetchedAt: "2026-09-13T14:48:29.395507+00:00" }),
+  "2026-09-13 22:48:29",
+  "lastFetchedAt ISO UTC becomes Shanghai display beside refresh"
+);
+assertEqual(
+  tipChartStatusText({ lastFetchedAt: "2026-09-13T14:48:29.395507+00:00" }, [{ t: "x" }]),
+  "",
+  "legend-below status should not repeat fetched time"
+);
+const applyFn = src.slice(src.indexOf("function applyTipChartData("), src.indexOf("async function fetchTipTokenChart("));
+assert(applyFn.includes("els.fetched"), "applyTipChartData must paint fetched time");
+assert(applyFn.includes("tipChartFetchedText"), "applyTipChartData must use tipChartFetchedText");
+
 assert(src.includes("const TOKEN_CHART_HIDDEN = new Set()"), "TOKEN_CHART_HIDDEN module set");
 assert(src.includes("function toggleTokenChartKey("), "toggleTokenChartKey missing");
 assert(
   /function toggleTokenChartKey\([^)]*\)[\s\S]*TOKEN_CHART_KEYS\.includes/.test(src),
   "toggleTokenChartKey must ignore unknown keys"
+);
+assert(src.includes("function applyChartHidden("), "applyChartHidden missing");
+assert(src.includes("function persistChartHidden("), "persistChartHidden missing");
+const toggleFn = src.slice(src.indexOf("function toggleTokenChartKey("), src.indexOf("function chartAxisTimeLabel("));
+assert(
+  toggleFn.includes("persistChartHidden("),
+  "toggling a legend key must persist hidden series to the server"
 );
 
 const legendFn = src.slice(
@@ -114,5 +147,82 @@ assert(bindFn.includes("redrawTipChart"), "legend click redraws");
 assert(bindFn.includes("stopPropagation"), "legend click must not bubble");
 assert(!/startRefresh(Summary)?\(/.test(bindFn), "legend click must not start board refresh");
 assert(!bindFn.includes("setRefreshBusy("), "legend click must not toggle board busy");
+
+assert(src.includes("function chartPlotRect("), "chartPlotRect missing");
+assert(src.includes("function chartXPositions("), "chartXPositions missing");
+assert(src.includes("function nearestChartIndex("), "nearestChartIndex missing");
+assert(src.includes("function clampChartCursor("), "clampChartCursor missing");
+assert(src.includes("TOKEN_CHART_LONG_PRESS_MS"), "long-press duration constant missing");
+assert(src.includes("TOKEN_CHART_SCRUB_PX"), "scrub pixel slop constant missing");
+
+eval(src.slice(src.indexOf("function createdAtMs("), src.indexOf("function fmtAgeDays(")));
+const helperStart = src.indexOf("function chartPlotRect(");
+const helperEnd = src.indexOf("function drawTokenChart(");
+assert(helperStart >= 0 && helperEnd > helperStart, "helpers should sit before drawTokenChart");
+eval(src.slice(helperStart, helperEnd));
+
+const sample = [
+  { t: "2026-09-11T00:00:00.000Z", mcap: 1 },
+  { t: "2026-09-11T12:00:00.000Z", mcap: 2 },
+  { t: "2026-09-12T00:00:00.000Z", mcap: 3 },
+];
+assertEqual(nearestChartIndex(sample, 10, 640), 0, "left edge snaps to first point");
+assertEqual(nearestChartIndex(sample, 630, 640), 2, "right edge snaps to last point");
+assertEqual(nearestChartIndex([], 100, 640), null, "empty series has no cursor");
+assertEqual(clampChartCursor(sample, 9), 2, "cursor clamps to last index");
+assertEqual(clampChartCursor(sample, null), null, "null cursor stays null");
+
+assert(/function formatChartLegend\(\s*series\s*,/.test(src), "formatChartLegend accepts cursor index");
+assert(!legendFn.includes("row-tip-chart-cursor-time"), "selected time must not sit in the legend");
+assert(showFn.includes("row-tip-chart-cursor-time"), "cursor time element missing in tip HTML");
+assert(
+  showFn.indexOf("持仓轨迹") < showFn.indexOf("row-tip-chart-cursor-time") &&
+    showFn.indexOf("row-tip-chart-cursor-time") < showFn.indexOf("row-tip-chart-fetched"),
+  "cursor time should sit after 持仓轨迹 and before fetched time"
+);
+assert(showFn.includes("row-tip-chart-fetched"), "fetched time should sit in chart head");
+assert(
+  showFn.indexOf("row-tip-chart-fetched") < showFn.indexOf("row-tip-chart-refresh") &&
+    showFn.indexOf("row-tip-chart-refresh") < showFn.indexOf("row-tip-chart-canvas"),
+  "fetched time should sit left of the refresh button"
+);
+assert(
+  showFn.indexOf("row-tip-chart-fetched") < showFn.indexOf("row-tip-chart-status") &&
+    showFn.indexOf("row-tip-chart-status") < showFn.indexOf("row-tip-chart-refresh") &&
+    showFn.indexOf("row-tip-chart-refresh") < showFn.indexOf("row-tip-chart-canvas"),
+  "progress/error status should sit left of the refresh button"
+);
+assert(
+  showFn.indexOf("row-tip-chart-status") < showFn.indexOf("row-tip-chart-legend"),
+  "status should not sit below the legend"
+);
+assertEqual(
+  tipChartStatusText({ running: true, progress: { fetched: 3, total: 10 }, lastFetchedAt: "2026-09-13T14:48:29.395507+00:00" }, [{ t: "x" }]),
+  "已拉 3/10",
+  "running progress should still be a status string"
+);
+assertEqual(
+  tipChartStatusText({ error: "刷新失败" }, [{ t: "x" }]),
+  "刷新失败",
+  "error should still be a status string"
+);
+assert(redrawFn.includes("cursorTime") || redrawFn.includes("row-tip-chart-cursor-time"), "redrawTipChart must update head time");
+assert(drawFn.includes("setLineDash"), "drawTokenChart must draw dashed cursor");
+assert(drawFn.includes("cursorIndex") || drawFn.includes("clampChartCursor"), "drawTokenChart reads cursor index");
+assert(redrawFn.includes("_cursorIndex") || redrawFn.includes("cursor"), "redrawTipChart must pass cursor");
+
+assert(bindFn.includes("pointerdown"), "canvas cursor uses pointerdown");
+assert(bindFn.includes("pointerup") || bindFn.includes("pointercancel"), "canvas cursor uses pointerup");
+assert(bindFn.includes("TOKEN_CHART_LONG_PRESS_MS") || bindFn.includes("400"), "long-press uses 400ms");
+assert(bindFn.includes("nearestChartIndex"), "pointer maps x to nearest point");
+assert(!/startRefresh(Summary)?\(/.test(bindFn), "chart pointer must not start board refresh");
+
+const cssCursor = fs.readFileSync(path.join(__dirname, "..", "web", "styles.css"), "utf8");
+assert(/touch-action:\s*none/.test(cssCursor.slice(
+  cssCursor.indexOf(".row-tip-chart-canvas"),
+  cssCursor.indexOf(".row-tip-chart-legend")
+)), "canvas should disable native pan while scrubbing");
+assert(cssCursor.includes(".row-tip-chart-cursor-time"), "selected time style missing");
+assert(cssCursor.includes(".row-tip-chart-title"), "title+time cluster style missing");
 
 console.log("ok");
