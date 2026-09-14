@@ -14,6 +14,8 @@ assert(
   html.indexOf('data-board="sum"') < html.indexOf('data-board="all"'),
   "汇总 should be the first sidebar board"
 );
+assert(/let activeBoard = ["']sum["']/.test(src), "page should default to 汇总");
+assert(src.includes("selectBoard(activeBoard)"), "boot should open the default board");
 
 assert(src.includes('board === "sum"') && src.includes('return "sum"'), "normalizeBoard should keep sum");
 assert(src.includes('return "汇总"') || src.includes("`汇总`"), "boardLabel should name 汇总");
