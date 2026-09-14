@@ -1,0 +1,19 @@
+---
+description: 把 FOMO Desk 更新到 Linux 服务器时的同步范围
+alwaysApply: true
+---
+
+# 服务器日常更新
+
+用户说「更新」「部署到服务器」时：运行 `python deploy/push.py --update`（默认即增量更新）。
+
+## 只同步代码和前端
+
+包括 `*.py`、`web/`、`requirements.txt`、`deploy/` 模板、测试。然后重启 `fomo`，**不要**覆盖 `/etc/nginx` 或重跑 certbot。
+
+## 不要上传（避免覆盖服务器登录态和数据）
+
+- OAuth / 登录态：`fomo_auth.json`、`fomo_oauth_pending.json`、`secret.json`、`Server.conf`
+- 本地缓存与导出：`fomo_token_meta_cache.json`、`fomo_mcap_ath_cache.json`、`fomo_mcap_live_cache.json`、`fomo_settings.json`、`*_last_result.json`、`*_holdings_by_token.{csv,json,md}`、`fomo_token_trades/`
+
+OAuth **代码**（`fomo_oauth.py` 等）仍要同步。跳过名单以 `deploy/push.py` 为准。

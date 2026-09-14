@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import posixpath
-import stat
 import sys
-import time
 from pathlib import Path
 
 import paramiko
@@ -25,9 +23,11 @@ SKIP_DIRS = {
     ".tmp_fomo_js",
     "fomo_token_trades",
 }
+# OAuth 登录态、密钥、本地缓存 / 导出结果：日常更新不同步，避免覆盖服务器数据。
 SKIP_FILES = {
     "Server.conf",
     "push.py",
+    "secret.json",
     "fomo_auth.json",
     "fomo_oauth_pending.json",
     "fomo_token_meta_cache.json",
@@ -121,7 +121,7 @@ def upload(sftp: paramiko.SFTPClient) -> int:
     return len(files)
 
 
-def main() -> int:
+def connect() -> tuple[dict[str, str], paramiko.SSHClient]:
     conf = load_conf()
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
@@ -134,6 +134,40 @@ def main() -> int:
         look_for_keys=False,
         allow_agent=False,
     )
+    return conf, client
+
+
+def sync_code(client: paramiko.SSHClient) -> int:
+    sftp = client.open_sftp()
+    ensure_remote_dir(sftp, REMOTE_DIR)
+    count = upload(sftp)
+    print(f"uploaded {count} files", flush=True)
+    return count
+
+
+def update_deploy() -> int:
+    """Incremental sync: code/UI only. Do not overwrite nginx SSL or server data."""
+    _, client = connect()
+    sync_code(client)
+    code, _, _ = run(
+        client,
+        "/opt/Fomo/.venv/bin/pip install -r /opt/Fomo/requirements.txt && systemctl restart fomo",
+        timeout=300,
+    )
+    if code != 0:
+        run(client, "journalctl -u fomo -n 80 --no-pager")
+        return code
+    run(client, "sleep 1; systemctl is-active fomo nginx")
+    run(
+        client,
+        f"curl -sS -o /dev/null -w 'local_https:%{{http_code}}\\n' https://{DOMAIN}/ --resolve {DOMAIN}:443:127.0.0.1",
+    )
+    client.close()
+    return 0
+
+
+def bootstrap_deploy() -> int:
+    conf, client = connect()
 
     code, _, _ = run(
         client,
@@ -143,10 +177,7 @@ def main() -> int:
     if code != 0:
         return code
 
-    sftp = client.open_sftp()
-    ensure_remote_dir(sftp, REMOTE_DIR)
-    count = upload(sftp)
-    print(f"uploaded {count} files", flush=True)
+    sync_code(client)
     run(client, "rm -f /opt/Fomo/fomo_debot.py /opt/Fomo/tests/test_debot_story.py")
 
     code, _, _ = run(client, "chmod +x /opt/Fomo/deploy/remote-setup.sh && bash /opt/Fomo/deploy/remote-setup.sh", timeout=600)
@@ -183,6 +214,26 @@ def main() -> int:
     )
     client.close()
     return 0 if cert_code == 0 else 0
+
+
+def main() -> int:
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Deploy FOMO Desk to the Linux host.")
+    parser.add_argument(
+        "--update",
+        action="store_true",
+        help="incremental: sync code/UI, skip OAuth state and local caches, restart fomo",
+    )
+    parser.add_argument(
+        "--bootstrap",
+        action="store_true",
+        help="first-time install (nginx/certbot/systemd); do not use for routine updates",
+    )
+    args = parser.parse_args()
+    if args.bootstrap:
+        return bootstrap_deploy()
+    return update_deploy()
 
 
 if __name__ == "__main__":
