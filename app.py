@@ -565,7 +565,7 @@ def _run_chart_refresh(addr: str, holders: list[dict], circulating: float, token
         with _chart_lock:
             job = _chart_jobs.get(key) or {}
             job["status"] = "done"
-            job["error"] = f"{failed} 笔交易拉取失败" if failed else None
+            job["error"] = f"{failed}笔失败" if failed else None
             _chart_jobs[key] = job
     except Exception as exc:
         with _chart_lock:
@@ -608,12 +608,10 @@ def token_chart(addr: str = Query(default="")):
             "total": int(job.get("total") or 0),
         },
     }
-    if int(stats.get("missingTradeIds") or 0) > 0:
-        body["warning"] = "请先刷新榜单"
     if job.get("status") == "error" and job.get("error"):
         body["error"] = str(job["error"])
     elif failed > 0:
-        body["error"] = str(job.get("error") or f"{failed} 笔交易拉取失败")
+        body["error"] = str(job.get("error") or f"{failed}笔失败")
     return body
 
 

@@ -635,6 +635,37 @@ class TokenChartApiTests(unittest.TestCase):
         self.assertIsNone(body["lastFetchedAt"])
         self.assertFalse(body["running"])
 
+    def test_get_does_not_warn_when_missing_trade_ids(self):
+        from fastapi.testclient import TestClient
+        import app as appmod
+
+        with TemporaryDirectory() as tmp:
+            trades_dir = Path(tmp) / "fomo_token_trades"
+            save_token_trades(
+                TOKEN,
+                {
+                    "tokenAddress": TOKEN,
+                    "traders": {},
+                    "series": [],
+                    "lastFetchedAt": "2026-09-13T14:38:00+00:00",
+                    "circulatingSupply": 0,
+                    "stats": {
+                        "fetched": 0,
+                        "skipped": 0,
+                        "failed": 0,
+                        "missingTradeIds": 4,
+                    },
+                },
+                root=Path(tmp),
+            )
+            with patch("fomo_token_chart.TRADES_DIR", trades_dir):
+                client = TestClient(appmod.app)
+                res = client.get("/api/fomo-top20/token-chart", params={"addr": TOKEN})
+        self.assertEqual(res.status_code, 200)
+        body = res.json()
+        self.assertNotIn("warning", body)
+        self.assertNotEqual(body.get("warning"), "请先刷新榜单")
+
     def test_unauthenticated_post_returns_401(self):
         import app as appmod
         from fastapi.testclient import TestClient
@@ -716,7 +747,7 @@ class TokenChartApiTests(unittest.TestCase):
         self.assertEqual(res.status_code, 200)
         body = res.json()
         self.assertIsNone(body["lastFetchedAt"])
-        self.assertIn("笔交易拉取失败", body.get("error") or "")
+        self.assertEqual(body.get("error"), "1笔失败")
 
     def test_get_traversal_addr_returns_400_chinese(self):
         from fastapi.testclient import TestClient

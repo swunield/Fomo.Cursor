@@ -1663,14 +1663,13 @@ function tipChartEls(row) {
 }
 
 function tipChartMissingHint(data) {
-  const missing = Number(data?.missingTradeIds || data?.stats?.missingTradeIds || 0);
-  if (missing > 0 || data?.warning) return data?.warning || "请先刷新榜单";
   return "";
 }
 
 function tipChartFetchedText(data) {
   if (!data?.lastFetchedAt) return "";
-  return shortenTime(data.lastFetchedAt) || String(data.lastFetchedAt);
+  const full = shortenTime(data.lastFetchedAt) || String(data.lastFetchedAt);
+  return full.replace(/:\d{2}$/, "");
 }
 
 function tipChartStatusText(data, series) {
@@ -1679,7 +1678,7 @@ function tipChartStatusText(data, series) {
   if (data?.running) {
     const fetched = Number(data?.progress?.fetched || 0);
     const total = Number(data?.progress?.total || 0);
-    parts.push(`已拉 ${fetched}/${total}`);
+    parts.push(`[${fetched}/${total}]`);
   } else if (!points.length) {
     parts.push("无缓存");
   }

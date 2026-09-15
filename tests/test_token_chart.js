@@ -77,8 +77,8 @@ assert(
 );
 assertEqual(
   tipChartFetchedText({ lastFetchedAt: "2026-09-13T14:48:29.395507+00:00" }),
-  "2026-09-13 22:48:29",
-  "lastFetchedAt ISO UTC becomes Shanghai display beside refresh"
+  "2026-09-13 22:48",
+  "lastFetchedAt beside refresh keeps Shanghai time to the minute"
 );
 assertEqual(
   tipChartStatusText({ lastFetchedAt: "2026-09-13T14:48:29.395507+00:00" }, [{ t: "x" }]),
@@ -198,13 +198,30 @@ assert(
 );
 assertEqual(
   tipChartStatusText({ running: true, progress: { fetched: 3, total: 10 }, lastFetchedAt: "2026-09-13T14:48:29.395507+00:00" }, [{ t: "x" }]),
-  "已拉 3/10",
-  "running progress should still be a status string"
+  "[3/10]",
+  "running progress should be compact [fetched/total]"
 );
 assertEqual(
   tipChartStatusText({ error: "刷新失败" }, [{ t: "x" }]),
   "刷新失败",
   "error should still be a status string"
+);
+assertEqual(
+  tipChartMissingHint({ warning: "请先刷新榜单", missingTradeIds: 4 }),
+  "",
+  "missing tradeId hint should stay hidden"
+);
+assertEqual(
+  tipChartStatusText(
+    { warning: "请先刷新榜单", stats: { missingTradeIds: 4 }, lastFetchedAt: "2026-09-13T14:48:29.395507+00:00" },
+    [{ t: "x" }]
+  ),
+  "",
+  "status must not show 请先刷新榜单 after a board refresh"
+);
+assert(
+  !src.includes("请先刷新榜单"),
+  "chart UI must not contain 请先刷新榜单"
 );
 assert(redrawFn.includes("cursorTime") || redrawFn.includes("row-tip-chart-cursor-time"), "redrawTipChart must update head time");
 assert(drawFn.includes("setLineDash"), "drawTokenChart must draw dashed cursor");
