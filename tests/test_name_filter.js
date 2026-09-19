@@ -84,9 +84,54 @@ assertEqual(matchesTokenFilters(ember, { name: "EMBER" }), true, "exact name");
 assertEqual(matchesTokenFilters(ember, { name: "pepe" }), false, "unrelated name dropped");
 assertEqual(matchesTokenFilters(pepe, { name: "PE" }), true, "lowercase row matches uppercase query");
 assertEqual(matchesTokenFilters(ember, { name: "  Emb  " }), true, "trimmed query");
-assertEqual(matchesTokenFilters(ember, { name: "emb", daysMin: 9 }), false, "name AND other filters");
+assertEqual(
+  matchesTokenFilters(ember, { name: "emb", daysMin: 9, mcapMin: 1e12 }),
+  true,
+  "name search ignores settings filters"
+);
+assertEqual(matchesTokenFilters(ember, { daysMin: 9 }), false, "settings days still apply without name");
+assertEqual(matchesTokenFilters(pepe, { name: "zzz", daysMin: 1 }), false, "unrelated name still dropped");
 assert(hasAnyFilter({ name: "emb" }), "name-only counts as active filter");
 assert(!hasAnyFilter({ name: "   " }), "blank name is not a filter");
+
+const withHolder = {
+  名称: "EMBER",
+  市值: "10M",
+  持仓市值: "1M",
+  持仓人数: "1",
+  天数: "8.8",
+  holders: [{ name: "ogle", handle: "ogle", rank: 9 }],
+  所有持仓人: "9.ogle 12.1M(2.44%)",
+};
+assertEqual(matchesTokenFilters(withHolder, { name: "ogle" }), true, "holder display name matches");
+assertEqual(matchesTokenFilters(withHolder, { name: "OGLE" }), true, "holder name is case-insensitive");
+assertEqual(matchesTokenFilters(ember, { name: "ogle" }), false, "no holder should not match holder query");
+assertEqual(
+  matchesTokenFilters(
+    { 名称: "PEPE", holders: [{ name: "DumbCrayonEater", handle: "dumbcrayoneater" }] },
+    { name: "crayon" }
+  ),
+  true,
+  "holder substring matches"
+);
+assertEqual(
+  matchesTokenFilters(
+    { 名称: "X", 所有持仓人: "1.point farm capital 100K(1.00%)" },
+    { name: "farm" }
+  ),
+  true,
+  "holder text in 所有持仓人 matches"
+);
+assertEqual(
+  matchesTokenFilters(
+    { 名称: "X", 所有持仓人: "1.ogle 100K(1.00%)" },
+    { name: "100k" }
+  ),
+  false,
+  "holding size should not count as a holder name"
+);
+
+assert(html.includes('placeholder="代币 / 持仓人"'), "name input placeholder mentions holders");
 
 const media = css.indexOf("@media (max-width: 860px)");
 assert(media >= 0, "mobile media query missing");

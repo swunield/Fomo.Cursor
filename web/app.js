@@ -679,14 +679,34 @@ function inRange(value, min, max) {
   return true;
 }
 
+function rowNameQueryHaystack(row) {
+  const bits = [row?.["名称"], row?.["代币名称"]];
+  for (const h of Array.isArray(row?.holders) ? row.holders : []) {
+    bits.push(h?.name, h?.handle);
+  }
+  const lines = [];
+  const details = row?.["持仓明细"];
+  if (Array.isArray(details)) lines.push(...details);
+  else if (details) lines.push(String(details));
+  const all = row?.["所有持仓人"];
+  if (all) lines.push(String(all));
+  for (const line of lines) {
+    for (const part of String(line).split(/\n+/)) {
+      const who = part.replace(/\s+\S+\([^)]*\).*$/, "").trim();
+      const name = who.replace(/^\d+\./, "").trim();
+      if (name) bits.push(name);
+    }
+  }
+  return bits.filter(Boolean).join("\n").toLowerCase();
+}
+
 function matchesTokenFilters(row, f) {
   if (f?.favOnly) {
     if (!isFavorited(row["合约地址"], f)) return false;
   }
   const q = String(f?.name || "").trim().toLowerCase();
   if (q) {
-    const name = String(row["名称"] || row["代币名称"] || "").toLowerCase();
-    if (!name.includes(q)) return false;
+    return rowNameQueryHaystack(row).includes(q);
   }
   const mcap = parseNumber(row["市值"]);
   const hold = parseNumber(row["持仓市值"]);
@@ -1382,7 +1402,7 @@ function showRowTip(row, tr, clientX, clientY) {
 
   rowTip.innerHTML = `
     <div class="row-tip-line row-tip-name">
-      <span class="row-tip-name-left">${favButton(row)}<span class="row-tip-name-text">${escapeHtml(String(name))}</span></span>
+      <span class="row-tip-name-left">${favButton(row)}${debotLinkButton(row)}<span class="row-tip-name-text">${escapeHtml(String(name))}</span></span>
       <span class="row-tip-name-meta">${escapeHtml(mcapText)} · ${escapeHtml(volText)} · <span class="num chg ${chgClass(chgText)}">${escapeHtml(chgText)}</span></span>
     </div>
     <div class="row-tip-line"><span class="row-tip-label">平台</span>${escapeHtml(String(platform))}</div>
