@@ -8,6 +8,8 @@
   "mcapMax": "800M",
   "holdMin": "20K",
   "holdMax": "",
+  "holdPctMin": "",
+  "holdPctMax": "",
   "countMin": "2",
   "countMax": "",
   "daysMin": "",

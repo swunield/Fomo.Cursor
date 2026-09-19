@@ -86,6 +86,8 @@ class SettingsPayload(BaseModel):
     mcapMax: str | None = None
     holdMin: str | None = None
     holdMax: str | None = None
+    holdPctMin: str | None = None
+    holdPctMax: str | None = None
     countMin: str | None = None
     countMax: str | None = None
     daysMin: str | None = None

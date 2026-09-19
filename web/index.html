@@ -185,7 +185,7 @@
 
         <section class="settings-section" id="token-filter-box">
           <div class="auth-title">代币筛选</div>
-          <p class="filter-help">作用于当前榜单结果；留空不限。市值支持 K/M，如 <code>500K</code>、<code>10M</code>；天数支持一位小数，如 <code>1.5</code>、<code>30</code></p>
+          <p class="filter-help">作用于当前榜单结果；留空不限。市值支持 K/M，如 <code>500K</code>、<code>10M</code>；持仓市值比例单位 1%，如 <code>1</code>、<code>5</code> 表示 1%、5%；天数支持一位小数，如 <code>1.5</code>、<code>30</code></p>
           <label class="filter-row">
             <span>市值区间</span>
             <div class="filter-range">
@@ -200,6 +200,14 @@
               <input id="flt-hold-min" class="filter-input" type="text" inputmode="decimal" placeholder="最小" />
               <span class="filter-dash">–</span>
               <input id="flt-hold-max" class="filter-input" type="text" inputmode="decimal" placeholder="最大" />
+            </div>
+          </label>
+          <label class="filter-row">
+            <span>持仓市值比例区间</span>
+            <div class="filter-range">
+              <input id="flt-hold-pct-min" class="filter-input" type="text" inputmode="decimal" placeholder="最小 %" />
+              <span class="filter-dash">–</span>
+              <input id="flt-hold-pct-max" class="filter-input" type="text" inputmode="decimal" placeholder="最大 %" />
             </div>
           </label>
           <label class="filter-row">
@@ -228,6 +236,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=20260919c"></script>
+  <script src="/static/app.js?v=20260919e"></script>
 </body>
 </html>

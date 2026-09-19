@@ -25,12 +25,15 @@ class TokenFilterSettingsTests(unittest.TestCase):
     def test_default_filters_are_empty(self):
         s = load_settings()
         self.assertEqual(s["mcapMin"], "")
+        self.assertEqual(s["holdPctMin"], "")
+        self.assertEqual(s["holdPctMax"], "")
         self.assertEqual(s["daysMax"], "")
 
     def test_save_and_reload_filter_strings(self):
-        save_settings(filters={"mcapMin": "500K", "daysMax": "30"})
+        save_settings(filters={"mcapMin": "500K", "holdPctMin": "1", "daysMax": "30"})
         s = load_settings()
         self.assertEqual(s["mcapMin"], "500K")
+        self.assertEqual(s["holdPctMin"], "1")
         self.assertEqual(s["daysMax"], "30")
         data = json.loads(self.path.read_text(encoding="utf-8"))
         self.assertEqual(data["mcapMin"], "500K")
@@ -105,15 +108,17 @@ class TokenFilterSettingsApiTests(unittest.TestCase):
                 client = TestClient(appmod.app)
                 res = client.post(
                     "/api/settings",
-                    json={"mcapMin": "500K", "daysMax": "8.5"},
+                    json={"mcapMin": "500K", "holdPctMax": "5", "daysMax": "8.5"},
                 )
                 self.assertEqual(res.status_code, 200)
                 body = res.json()
                 self.assertTrue(body.get("ok"))
                 self.assertEqual(body.get("mcapMin"), "500K")
+                self.assertEqual(body.get("holdPctMax"), "5")
                 self.assertEqual(body.get("daysMax"), "8.5")
                 got = client.get("/api/settings")
                 self.assertEqual(got.json().get("mcapMin"), "500K")
+                self.assertEqual(got.json().get("holdPctMax"), "5")
 
     def test_post_chart_hidden_roundtrip(self):
         from fastapi.testclient import TestClient

@@ -57,6 +57,8 @@ FILTER_KEYS = (
     "mcapMax",
     "holdMin",
     "holdMax",
+    "holdPctMin",
+    "holdPctMax",
     "countMin",
     "countMax",
     "daysMin",

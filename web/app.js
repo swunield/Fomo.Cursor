@@ -50,6 +50,8 @@ const FILTER_FIELDS = [
   { key: "mcapMax", id: "flt-mcap-max" },
   { key: "holdMin", id: "flt-hold-min" },
   { key: "holdMax", id: "flt-hold-max" },
+  { key: "holdPctMin", id: "flt-hold-pct-min" },
+  { key: "holdPctMax", id: "flt-hold-pct-max" },
   { key: "countMin", id: "flt-count-min" },
   { key: "countMax", id: "flt-count-max" },
   { key: "daysMin", id: "flt-days-min" },
@@ -564,7 +566,8 @@ function readFilterInputs() {
 
 function writeFilterInputs(values) {
   for (const f of FILTER_FIELDS) {
-    document.getElementById(f.id).value = values?.[f.key] || "";
+    if (!values || !Object.prototype.hasOwnProperty.call(values, f.key)) continue;
+    document.getElementById(f.id).value = values[f.key] || "";
   }
 }
 
@@ -647,6 +650,8 @@ function getActiveFilters() {
     mcapMax: parseNumber(raw.mcapMax),
     holdMin: parseNumber(raw.holdMin),
     holdMax: parseNumber(raw.holdMax),
+    holdPctMin: parseNumber(raw.holdPctMin),
+    holdPctMax: parseNumber(raw.holdPctMax),
     countMin: parseNumber(raw.countMin),
     countMax: parseNumber(raw.countMax),
     daysMin: parseNumber(raw.daysMin),
@@ -664,6 +669,8 @@ function hasAnyFilter(f) {
     f.mcapMax,
     f.holdMin,
     f.holdMax,
+    f.holdPctMin,
+    f.holdPctMax,
     f.countMin,
     f.countMax,
     f.daysMin,
@@ -700,6 +707,19 @@ function rowNameQueryHaystack(row) {
   return bits.filter(Boolean).join("\n").toLowerCase();
 }
 
+function parseHoldMcapPct(row) {
+  const text = String(row?.["持仓市值"] ?? "");
+  const m = text.match(/\(([\d.]+)\s*%\)/);
+  if (m) {
+    const n = Number(m[1]);
+    if (Number.isFinite(n)) return n;
+  }
+  const hold = parseNumber(row?.["持仓市值"]);
+  const mcap = parseNumber(row?.["市值"]);
+  if (hold == null || !mcap || mcap <= 0) return null;
+  return (hold / mcap) * 100;
+}
+
 function matchesTokenFilters(row, f) {
   if (f?.favOnly) {
     if (!isFavorited(row["合约地址"], f)) return false;
@@ -710,11 +730,13 @@ function matchesTokenFilters(row, f) {
   }
   const mcap = parseNumber(row["市值"]);
   const hold = parseNumber(row["持仓市值"]);
+  const holdPct = parseHoldMcapPct(row);
   const count = parseNumber(row["持仓人数"]);
   const days = parseNumber(row["天数"] || fmtAgeDays(row["创建时间"]));
   return (
     inRange(mcap, f.mcapMin, f.mcapMax) &&
     inRange(hold, f.holdMin, f.holdMax) &&
+    inRange(holdPct, f.holdPctMin, f.holdPctMax) &&
     inRange(count, f.countMin, f.countMax) &&
     inRange(days, f.daysMin, f.daysMax)
   );
