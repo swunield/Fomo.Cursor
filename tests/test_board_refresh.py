@@ -173,7 +173,8 @@ class CachedPayloadTests(unittest.TestCase):
                 "traders": [{"handle": "x"}] * 50,
             }
         )
-        self.assertEqual(body["rows"], [{"名称": "AAA"}])
+        self.assertEqual(body["rows"][0]["名称"], "AAA")
+        self.assertEqual(body["rows"][0].get("closedCount"), 0)
         self.assertEqual(body.get("traders"), [])
         self.assertEqual(body.get("traderRanks"), [])
 

@@ -242,4 +242,84 @@ assert(/touch-action:\s*none/.test(cssCursor.slice(
 assert(cssCursor.includes(".row-tip-chart-cursor-time"), "selected time style missing");
 assert(cssCursor.includes(".row-tip-chart-title"), "title+time cluster style missing");
 
+assert(src.includes("function formatTipHolderCount("), "formatTipHolderCount missing");
+assert(src.includes("function closedHolderTipLine("), "closedHolderTipLine missing");
+assert(src.includes("function mergeClosedHolderLines("), "mergeClosedHolderLines missing");
+assert(src.includes("function paintTipClosedHolders("), "paintTipClosedHolders missing");
+assert(showFn.includes("formatTipHolderCount"), "tip title uses formatTipHolderCount");
+assert(showFn.includes("row-tip-hold-head"), "tip holder head hook missing");
+assert(applyFn.includes("paintTipClosedHolders"), "chart apply paints closed holders");
+assert(src.includes("is-closed"), "closed holder row class");
+assert(cssCursor.includes(".row-tip-holder-row.is-closed"), "closed holder css");
+
+eval(src.slice(src.indexOf("function parseNumber(value)"), src.indexOf("function readFilterInputs(")));
+eval(src.slice(src.indexOf("function shortenTime("), src.indexOf("function createdAtMs(")));
+eval(src.slice(src.indexOf("function createdAtMs("), src.indexOf("function fmtAgeDays(")));
+eval(src.slice(src.indexOf("function parseHolderTipParts("), src.indexOf("function renderHolderTipRow(")));
+eval(src.slice(src.indexOf("function formatSummaryHolderWho("), src.indexOf("function relabelSummaryHolderLine(")));
+eval(src.slice(src.indexOf("function formatTipHolderCount("), src.indexOf("function paintTipClosedHolders(")));
+
+assertEqual(formatTipHolderCount(14, 2), "14(2)", "title is current(closed)");
+assertEqual(formatTipHolderCount("14", 0), "14(0)", "zero closed still shown");
+
+assert(src.includes("function formatTableHolderCount("), "formatTableHolderCount missing");
+const renderStart = src.indexOf("function renderTable(");
+const renderEnd = src.indexOf("function chgClass(");
+assert(renderStart >= 0 && renderEnd > renderStart, "renderTable missing");
+assert(
+  src.slice(renderStart, renderEnd).includes("formatTableHolderCount"),
+  "table 持仓人数 uses formatTableHolderCount"
+);
+const cardStart = src.indexOf("function renderCards(");
+const cardEnd = src.indexOf("function holdersTableText(");
+assert(cardStart >= 0 && cardEnd > cardStart, "renderCards missing");
+assert(
+  src.slice(cardStart, cardEnd).includes("formatTableHolderCount"),
+  "card 持仓人数 uses formatTableHolderCount"
+);
+eval(src.slice(src.indexOf("function formatTableHolderCount("), src.indexOf("function formatTipHolderCount(")));
+assertEqual(formatTableHolderCount(14, 2), "14/2", "table count is current/closed");
+assertEqual(formatTableHolderCount("14", 0), "14/0", "table still shows zero closed");
+
+const closedLine = closedHolderTipLine(
+  {
+    name: "Alice",
+    handle: "alice",
+    closedAt: "2026-09-13T04:00:00.000Z",
+    holdingSince: "2026-09-11T11:00:00.000Z",
+    pnlUsd: -10,
+  },
+  { 市值: "10M" }
+);
+const closedParts = parseHolderTipParts(closedLine);
+assert(closedParts.who.includes("Alice"), "closed line keeps name");
+assert(String(closedParts.hold).startsWith("0"), "closed hold value is 0");
+assertEqual(closedParts.upd, "[20260913 12:00]", "last column is Shanghai close time");
+
+const merged = mergeClosedHolderLines(
+  ["1.Bob 10K(0.10%) +1K(+10.00%) [00:01:00] [20260913 12:00]"],
+  [
+    {
+      name: "Alice",
+      handle: "alice",
+      closedAt: "2026-09-13T04:00:00.000Z",
+      holdingSince: "2026-09-11T11:00:00.000Z",
+      pnlUsd: -10,
+    },
+  ],
+  { 市值: "10M" }
+);
+assertEqual(merged.open.length, 1, "keep current holders");
+assertEqual(merged.closed.length, 1, "append closed holders");
+assertEqual(merged.closedCount, 1, "closed count");
+assert(merged.lines[0].includes("Bob"), "current holders stay on top");
+assert(merged.lines[merged.lines.length - 1].includes("Alice"), "closed holders go to bottom");
+
+const skipped = mergeClosedHolderLines(
+  ["1.Alice 10K(0.10%) +1K(+10.00%) [00:01:00] [20260913 12:00]"],
+  [{ name: "Alice", handle: "alice", closedAt: "2026-09-13T04:00:00.000Z", pnlUsd: -10 }],
+  { 市值: "10M" }
+);
+assertEqual(skipped.closed.length, 0, "do not duplicate a still-listed holder as closed");
+
 console.log("ok");

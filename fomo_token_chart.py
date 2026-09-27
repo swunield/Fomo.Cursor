@@ -5,6 +5,8 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
+from update_token_marketcap import MIN_OPEN_HOLD_MCAP_PCT
+
 DUST_AMOUNT = 1e-9
 
 _REPO_ROOT = Path(__file__).resolve().parent
@@ -103,6 +105,18 @@ def iter_trade_events(
     return events
 
 
+def open_token_amount(amount: float, circulating: float) -> float:
+    """Token amount that still counts as a position.
+
+    A share below 0.02% of supply is flat (no position / already closed).
+    """
+    if amount <= DUST_AMOUNT:
+        return 0.0
+    if circulating > 0 and (amount / circulating) * 100 < MIN_OPEN_HOLD_MCAP_PCT:
+        return 0.0
+    return amount
+
+
 def _snapshot(
     t: str,
     positions: dict[str, dict[str, float]],
@@ -114,11 +128,13 @@ def _snapshot(
     pnl = 0.0
 
     for pos in positions.values():
-        amount = pos["amount"]
+        amount = open_token_amount(pos["amount"], circulating)
         total_amount += amount
         if amount > DUST_AMOUNT:
             holders += 1
-        pnl += amount * last_price - pos["cost"] + pos["realized"]
+            pnl += amount * last_price - pos["cost"] + pos["realized"]
+        else:
+            pnl += pos["realized"]
 
     return {
         "t": t,
@@ -161,18 +177,7 @@ def build_series(
         pos = positions.setdefault(
             user_id, {"amount": 0.0, "cost": 0.0, "realized": 0.0}
         )
-
-        if qty > 0:
-            pos["amount"] += qty
-            pos["cost"] += usd
-        elif qty < 0:
-            sold = min(pos["amount"], -qty)
-            frac = sold / pos["amount"] if pos["amount"] else 0.0
-            proceeds = usd * (sold / (-qty)) if qty < 0 and -qty else usd
-            cost_cut = pos["cost"] * frac
-            pos["realized"] += proceeds - cost_cut
-            pos["cost"] -= cost_cut
-            pos["amount"] -= sold
+        _apply_qty(pos, qty, usd)
 
         if price > 0:
             last_price = price
@@ -184,6 +189,91 @@ def build_series(
             series.append(point)
 
     return series
+
+
+def _apply_qty(pos: dict, qty: float, usd: float) -> None:
+    if qty > 0:
+        pos["amount"] += qty
+        pos["cost"] += usd
+        return
+    if qty >= 0:
+        return
+    sold = min(pos["amount"], -qty)
+    frac = sold / pos["amount"] if pos["amount"] else 0.0
+    proceeds = usd * (sold / (-qty)) if -qty else usd
+    cost_cut = pos["cost"] * frac
+    pos["realized"] += proceeds - cost_cut
+    pos["cost"] -= cost_cut
+    pos["amount"] -= sold
+
+
+def _trader_events(token_address: str, trader: dict) -> tuple[list[dict], str | None]:
+    user_id = trader.get("userId") or ""
+    default_address = trader.get("userAddress") or ""
+    events: list[dict] = []
+    closed_at = None
+    for trade_obj in (trader.get("trades") or {}).values():
+        trade_closed = trade_obj.get("closedAt")
+        if trade_closed and (not closed_at or str(trade_closed) > str(closed_at)):
+            closed_at = trade_closed
+        user_address = trade_obj.get("userAddress") or default_address
+        events.extend(
+            iter_trade_events(token_address, user_id, user_address, trade_obj)
+        )
+    events.sort(key=lambda e: e["t"])
+    return events, closed_at
+
+
+def closed_holders_from_cache(cache: dict) -> list[dict]:
+    addr = cache.get("tokenAddress") or ""
+    circulating = float(cache.get("circulatingSupply") or 0)
+    out: list[dict] = []
+    for trader in (cache.get("traders") or {}).values():
+        events, trade_closed_at = _trader_events(addr, trader)
+        if not events:
+            continue
+        pos = {"amount": 0.0, "cost": 0.0, "realized": 0.0}
+        first_t = None
+        zero_t = None
+        bought_usd = 0.0
+        was_open = False
+        for event in events:
+            if first_t is None:
+                first_t = event["t"]
+            qty = event["qty"]
+            usd = event["usd"]
+            if qty > 0:
+                bought_usd += usd
+            _apply_qty(pos, qty, usd)
+            if open_token_amount(pos["amount"], circulating) > 0:
+                was_open = True
+                zero_t = None
+            else:
+                zero_t = event["t"]
+        if open_token_amount(pos["amount"], circulating) > 0:
+            continue
+        if not was_open:
+            continue
+        closed_at = trade_closed_at or zero_t
+        if not closed_at:
+            continue
+        pnl = float(pos["realized"] or 0)
+        pct = (pnl / bought_usd * 100.0) if bought_usd else None
+        out.append(
+            {
+                "uid": trader.get("userId") or "",
+                "handle": trader.get("handle") or "",
+                "name": trader.get("displayName")
+                or trader.get("handle")
+                or "",
+                "closedAt": closed_at,
+                "holdingSince": first_t or "",
+                "pnlUsd": pnl,
+                "pnlPct": pct,
+            }
+        )
+    out.sort(key=lambda h: str(h.get("closedAt") or ""), reverse=True)
+    return out
 
 
 def empty_cache(addr: str) -> dict:

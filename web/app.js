@@ -129,6 +129,8 @@ let refreshBusy = false;
 let googlePollTimer = null;
 let googleLoginBusy = false;
 let favoriteAddrs = new Set();
+/** handle/uid/displayName(lower) -> [{ address, network }] */
+let walletLinksByKey = new Map();
 
 function isAbortError(e) {
   return !!(e && (e.name === "AbortError" || /aborted/i.test(String(e.message || e))));
@@ -707,17 +709,32 @@ function rowNameQueryHaystack(row) {
   return bits.filter(Boolean).join("\n").toLowerCase();
 }
 
-function parseHoldMcapPct(row) {
-  const text = String(row?.["持仓市值"] ?? "");
+function parseHoldMcapPct(row, col) {
+  const field = col || "持仓市值";
+  const text = String(row?.[field] ?? "");
   const m = text.match(/\(([\d.]+)\s*%\)/);
   if (m) {
     const n = Number(m[1]);
     if (Number.isFinite(n)) return n;
   }
-  const hold = parseNumber(row?.["持仓市值"]);
+  const hold = parseNumber(row?.[field]);
   const mcap = parseNumber(row?.["市值"]);
   if (hold == null || !mcap || mcap <= 0) return null;
   return (hold / mcap) * 100;
+}
+
+function holdMcapPctClass(pct) {
+  const n = Number(pct);
+  if (!Number.isFinite(n) || n < 5) return "";
+  if (n < 10) return "hold-pct-mid";
+  if (n <= 15) return "hold-pct-high";
+  return "hold-pct-hot";
+}
+
+function wrapHoldPctHtml(text, pct) {
+  const band = holdMcapPctClass(pct);
+  const body = escapeHtml(String(text ?? ""));
+  return band ? `<span class="${band}">${body}</span>` : body;
 }
 
 function matchesTokenFilters(row, f) {
@@ -742,8 +759,23 @@ function matchesTokenFilters(row, f) {
   );
 }
 
-function compareSortValues(a, b, col, dir) {
+function isHoldPctSortCol(col) {
+  return col === "持仓市值" || col === "最高持仓市值" || col === "最低持仓市值";
+}
+
+function compareSortValues(a, b, col, dir, key) {
   const mul = dir === "asc" ? 1 : -1;
+  if (isHoldPctSortCol(col) && key === "pct") {
+    const an = parseHoldMcapPct(a, col);
+    const bn = parseHoldMcapPct(b, col);
+    const aEmpty = an == null;
+    const bEmpty = bn == null;
+    if (aEmpty && bEmpty) return 0;
+    if (aEmpty) return 1;
+    if (bEmpty) return -1;
+    if (an === bn) return 0;
+    return an < bn ? -1 * mul : 1 * mul;
+  }
   const av = a?.[col];
   const bv = b?.[col];
   if (NUM_COLS.has(col) || col === "创建时间") {
@@ -772,7 +804,7 @@ function sortRows(rows) {
   return rows
     .map((row, i) => ({ row, i }))
     .sort((x, y) => {
-      const c = compareSortValues(x.row, y.row, col, dir);
+      const c = compareSortValues(x.row, y.row, col, dir, sortState.key);
       return c !== 0 ? c : x.i - y.i;
     })
     .map((x) => x.row);
@@ -780,22 +812,41 @@ function sortRows(rows) {
 
 function sortIndicator(col) {
   if (sortState.col !== col || !sortState.dir) return "";
-  return sortState.dir === "asc" ? " ↑" : " ↓";
+  const arrow = sortState.dir === "asc" ? "↑" : "↓";
+  if (isHoldPctSortCol(col) && sortState.key === "pct") return ` %${arrow}`;
+  return ` ${arrow}`;
 }
 
-function onHeaderClick(col) {
-  if (sortState.col !== col) {
-    sortState = {
+function nextSortState(col, state) {
+  const st = state || { col: null, dir: null };
+  if (isHoldPctSortCol(col)) {
+    if (st.col !== col || !st.dir) {
+      return { col, dir: "desc", key: "value" };
+    }
+    if (st.dir === "desc" && (st.key || "value") === "value") {
+      return { col, dir: "desc", key: "pct" };
+    }
+    if (st.dir === "desc" && st.key === "pct") {
+      return { col, dir: "asc", key: "value" };
+    }
+    if (st.dir === "asc" && (st.key || "value") === "value") {
+      return { col, dir: "asc", key: "pct" };
+    }
+    return { col: null, dir: null };
+  }
+  if (st.col !== col) {
+    return {
       col,
       dir: NUM_COLS.has(col) || col === "创建时间" ? "desc" : "asc",
     };
-  } else if (sortState.dir === "desc") {
-    sortState = { col, dir: "asc" };
-  } else if (sortState.dir === "asc") {
-    sortState = { col: null, dir: null };
-  } else {
-    sortState = { col, dir: "desc" };
   }
+  if (st.dir === "desc") return { col, dir: "asc" };
+  if (st.dir === "asc") return { col: null, dir: null };
+  return { col, dir: "desc" };
+}
+
+function onHeaderClick(col) {
+  sortState = nextSortState(col, sortState);
   if (lastPayload) renderTable(lastPayload);
   else renderSortChips();
 }
@@ -813,7 +864,15 @@ function renderSortChips() {
   ];
   for (const col of COLUMNS) {
     const active = sortState.col === col && sortState.dir;
-    const dir = active ? (sortState.dir === "asc" ? "↑" : "↓") : "";
+    const dir = active
+      ? sortState.key === "pct"
+        ? sortState.dir === "asc"
+          ? "%↑"
+          : "%↓"
+        : sortState.dir === "asc"
+          ? "↑"
+          : "↓"
+      : "";
     chips.push(
       `<button type="button" class="sort-chip${active ? " active" : ""}" data-col="${escapeHtml(col)}">${escapeHtml(col)}${dir ? `<span class="sort-chip-dir">${dir}</span>` : ""}</button>`
     );
@@ -832,12 +891,12 @@ function renameLegacyRow(row) {
 
 function normalizePayload(payload) {
   if (!payload) return payload;
-  const rows = (payload.rows || []).map(renameLegacyRow);
+  const rows = (payload.rows || []).map(renameLegacyRow).map(withoutDustHolders).filter(Boolean);
   return {
     ...payload,
     columns: COLUMNS.slice(),
     rows,
-    tokenCount: payload.tokenCount || rows.length,
+    tokenCount: rows.length,
   };
 }
 
@@ -878,6 +937,92 @@ function debotTokenUrl(addr, platform, chainHint) {
   const chain = debotChainSlug(token, platform, chainHint);
   if (!chain) return "";
   return `https://debot.ai/token/${encodeURIComponent(chain)}/${encodeURIComponent(token)}`;
+}
+
+function debotWalletNetworkSlug(network) {
+  const raw = String(network || "").trim().toLowerCase();
+  const map = {
+    ethereum: "eth",
+    eth: "eth",
+    bsc: "bsc",
+    base: "base",
+    solana: "solana",
+    robinhood: "robinhood",
+    arbitrum: "arbitrum",
+    polygon: "polygon",
+    optimism: "optimism",
+    xlayer: "xlayer",
+  };
+  return map[raw] || "";
+}
+
+function debotAddressUrl(address, network) {
+  const addr = String(address || "").trim();
+  const chain = debotWalletNetworkSlug(network);
+  if (!addr || !chain) return "";
+  return `https://debot.ai/address/${encodeURIComponent(chain)}/${encodeURIComponent(addr)}`;
+}
+
+function indexWalletLinks(traders) {
+  const out = new Map();
+  const add = (key, wallets) => {
+    const k = String(key || "").trim().toLowerCase();
+    if (!k || !wallets?.length) return;
+    out.set(k, wallets);
+  };
+  for (const trader of traders || []) {
+    if (!trader || trader.status !== "matched") continue;
+    const wallets = (trader.wallets || [])
+      .filter((w) => w && w.address)
+      .map((w) => ({
+        address: String(w.address).trim(),
+        network: String(w.network || "").trim(),
+      }))
+      .filter((w) => w.address && debotWalletNetworkSlug(w.network));
+    if (!wallets.length) continue;
+    add(trader.userId, wallets);
+    add(trader.handle, wallets);
+    add(trader.displayName, wallets);
+  }
+  return out;
+}
+
+function pickHolderWallet(wallets, row) {
+  const list = Array.isArray(wallets) ? wallets : [];
+  if (!list.length) return null;
+  const chain = debotChainSlug(row?.["合约地址"], row?.["发射平台"], row?.debotChain);
+  if (!chain) return null;
+  return list.find((w) => debotWalletNetworkSlug(w.network) === chain) || null;
+}
+
+function lookupHolderWallets(name, row) {
+  const key = String(name || "").trim().toLowerCase();
+  if (key && walletLinksByKey.has(key)) return walletLinksByKey.get(key);
+  for (const h of row?.holders || []) {
+    const keys = [h?.uid, h?.handle, h?.name]
+      .map((s) => String(s || "").trim().toLowerCase())
+      .filter(Boolean);
+    if (!key || !keys.includes(key)) continue;
+    for (const k of keys) {
+      if (walletLinksByKey.has(k)) return walletLinksByKey.get(k);
+    }
+  }
+  return null;
+}
+
+function holderDebotAddressUrl(name, row) {
+  const chain = debotChainSlug(row?.["合约地址"], row?.["发射平台"], row?.debotChain);
+  if (!chain) return "";
+  const wallet = pickHolderWallet(lookupHolderWallets(name, row), row);
+  if (!wallet) return "";
+  return debotAddressUrl(wallet.address, chain);
+}
+
+function debotHolderLinkButton(name, row) {
+  const url = holderDebotAddressUrl(name, row);
+  return url
+    ? `<a class="debot-link-btn debot-holder-link-btn" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" title="在 Debot 打开钱包" aria-label="在 Debot 打开钱包">↗</a>`
+    : "";
 }
 
 function copyAddrButton(row) {
@@ -954,7 +1099,10 @@ function renderTable(payload) {
         sortState.col === c && sortState.dir
           ? ` aria-sort="${sortState.dir === "asc" ? "ascending" : "descending"}"`
           : ' aria-sort="none"';
-      return `<th class="sortable${active}" data-col="${escapeHtml(c)}"${aria} title="点击排序"><span class="th-label">${escapeHtml(c)}</span><span class="th-sort">${sortIndicator(c)}</span></th>`;
+      const title = isHoldPctSortCol(c)
+          ? "点击排序：市值↓ → 比例↓ → 市值↑ → 比例↑ → 无"
+          : "点击排序";
+      return `<th class="sortable${active}" data-col="${escapeHtml(c)}"${aria} title="${title}"><span class="th-label">${escapeHtml(c)}</span><span class="th-sort">${sortIndicator(c)}</span></th>`;
     })
     .join("")}</tr>`;
   hideRowTip();
@@ -963,6 +1111,7 @@ function renderTable(payload) {
       const tds = cols
         .map((c) => {
           let val = row[c] ?? "";
+          if (c === "持仓人数") val = formatTableHolderCount(row["持仓人数"], row.closedCount);
           if (c === "创建时间") val = shortenTime(val);
           if (c === "天数") val = fmtAgeDays(row["创建时间"]) || val;
           if (c === "24h涨跌") val = fmtChange24(val) || val;
@@ -971,6 +1120,10 @@ function renderTable(payload) {
           }
           let cls = "";
           if (NUM_COLS.has(c)) cls = "num";
+          if (c === "持仓市值") {
+            const band = holdMcapPctClass(parseHoldMcapPct(row));
+            if (band) cls = `${cls} ${band}`.trim();
+          }
           if (c === "24h涨跌" || c === "持仓盈亏") {
             const n = parseNumber(val);
             cls = "num chg";
@@ -1032,8 +1185,8 @@ function renderCards(rows) {
           <div class="token-card-item"><dt>市值</dt><dd>${escapeHtml(String(row["市值"] ?? "—"))}</dd></div>
           <div class="token-card-item"><dt>成交量</dt><dd>${escapeHtml(String(row["成交量"] ?? "—"))}</dd></div>
           <div class="token-card-item"><dt>天数</dt><dd>${escapeHtml(fmtAgeDays(row["创建时间"]) || "—")}</dd></div>
-          <div class="token-card-item"><dt>持仓人数</dt><dd>${escapeHtml(String(row["持仓人数"] ?? "—"))}</dd></div>
-          <div class="token-card-item"><dt>持仓市值</dt><dd>${escapeHtml(rewritePercentsInText(String(row["持仓市值"] ?? "—")))}</dd></div>
+          <div class="token-card-item"><dt>持仓人数</dt><dd>${escapeHtml(formatTableHolderCount(row["持仓人数"], row.closedCount))}</dd></div>
+          <div class="token-card-item"><dt>持仓市值</dt><dd class="${holdMcapPctClass(parseHoldMcapPct(row))}">${escapeHtml(rewritePercentsInText(String(row["持仓市值"] ?? "—")))}</dd></div>
           <div class="token-card-item"><dt>持仓盈亏</dt><dd class="num chg ${chgClass(row["持仓盈亏"])}">${escapeHtml(String(row["持仓盈亏"] ?? "—"))}</dd></div>
         </dl>
         <p class="token-card-holders">${escapeHtml(holdersTableText(row["所有持仓人"]))}</p>
@@ -1110,7 +1263,7 @@ function holdersTableText(val) {
 function parseHolderTipParts(line) {
   const text = String(line || "").trim();
   const m = text.match(
-    /^(\d+\..+?)\s+(\S+\([^)]*\))(?:\s+([+\-]?[\d.]+[KMB]?\([+\-]?\d+(?:\.\d+)?%\)))?(?:\s+(\[\d+:\d{2}:\d{2}\]))?(?:\s+(\[\d{8}\s+\d{2}:\d{2}\]))?\s*$/i
+    /^(\d+\..+?)\s+(\S+\([^)]*\))(?:\s+([+\-]?[\d.]+[KMB]?(?:\([+\-]?\d+(?:\.\d+)?%\))?))?(?:\s+(\[\d+:\d{2}:\d{2}\]))?(?:\s+(\[\d{8}\s+\d{2}:\d{2}\]))?\s*$/i
   );
   if (!m) {
     return { who: text, hold: "", pnl: "", dur: "", upd: "" };
@@ -1124,15 +1277,21 @@ function parseHolderTipParts(line) {
   };
 }
 
-function renderHolderTipRow(line) {
+function renderHolderTipRow(line, opts) {
   const parts = parseHolderTipParts(line);
   const n = parts.pnl ? parseNumber(parts.pnl) : null;
   let pnlCls = "tip-col tip-pnl chg-flat";
   if (n != null && n > 0) pnlCls = "tip-col tip-pnl chg-up";
   else if (n != null && n < 0) pnlCls = "tip-col tip-pnl chg-down";
-  return `<div class="row-tip-holder-row">
-    <span class="tip-col tip-who">${escapeHtml(parts.who)}</span>
-    <span class="tip-col tip-hold">${escapeHtml(rewritePercentsInText(parts.hold))}</span>
+  const closed = Boolean(opts && opts.closed);
+  const row = opts && opts.row;
+  const holdBand = holdMcapPctClass(parseHoldMcapPct({ 持仓市值: parts.hold }));
+  const holdCls = ["tip-col", "tip-hold", holdBand].filter(Boolean).join(" ");
+  const whoName = holderDisplayName(line);
+  const walletBtn = debotHolderLinkButton(whoName, row);
+  return `<div class="row-tip-holder-row${closed ? " is-closed" : ""}">
+    <span class="tip-col tip-who">${walletBtn}<span class="tip-who-text">${escapeHtml(parts.who)}</span></span>
+    <span class="${holdCls}">${escapeHtml(rewritePercentsInText(parts.hold))}</span>
     <span class="${pnlCls}">${escapeHtml(rewritePercentsInText(parts.pnl))}</span>
     <span class="tip-col tip-dur">${escapeHtml(parts.dur)}</span>
     <span class="tip-col tip-upd">${escapeHtml(parts.upd)}</span>
@@ -1264,6 +1423,13 @@ function rememberTokenHolders(store, key, holders, t) {
   }
 }
 
+function rememberClosedCount(target, incoming) {
+  const n = Number(incoming?.closedCount);
+  if (!Number.isFinite(n)) return;
+  const prev = Number(target?.closedCount);
+  target.closedCount = Number.isFinite(prev) ? Math.max(prev, n) : n;
+}
+
 function cloneTokenRow(row) {
   const out = { ...row };
   out["持仓明细"] = holderTipLines(row).slice();
@@ -1271,7 +1437,59 @@ function cloneTokenRow(row) {
   return out;
 }
 
+const MIN_OPEN_HOLD_MCAP_PCT = 0.02;
+
+function holdLinePct(line, mcap) {
+  const parts = parseHolderTipParts(line);
+  const text = String(parts.hold || "");
+  const m = text.match(/\(([\d.]+)\s*%\)/);
+  if (m) {
+    const n = Number(m[1]);
+    if (Number.isFinite(n)) return n;
+  }
+  const hold = parseNumber(parts.hold);
+  const cap = parseNumber(mcap);
+  if (hold == null || !cap || cap <= 0) return null;
+  return (hold / cap) * 100;
+}
+
+function holderValuePct(holder, mcap) {
+  if (!holder || holder.value == null || holder.value === "") return null;
+  const value = parseNumber(holder.value);
+  const cap = parseNumber(mcap);
+  if (value == null || !cap || cap <= 0) return null;
+  return (value / cap) * 100;
+}
+
+function isDustHoldPct(pct) {
+  return pct != null && pct < MIN_OPEN_HOLD_MCAP_PCT;
+}
+
+function withoutDustHolders(row) {
+  if (!row || typeof row !== "object") return row;
+  const mcap = row["市值"];
+  const lines = holderTipLines(row).filter((x) => x && x !== "—");
+  const rawHolders = Array.isArray(row.holders) ? row.holders : null;
+  const droppedLine = lines.some((line) => isDustHoldPct(holdLinePct(line, mcap)));
+  const droppedHolder = rawHolders
+    ? rawHolders.some((h) => isDustHoldPct(holderValuePct(h, mcap)))
+    : false;
+  if (!droppedLine && !droppedHolder) return row;
+  const openLines = lines.filter((line) => !isDustHoldPct(holdLinePct(line, mcap)));
+  if (!openLines.length) return null;
+  const next = {
+    ...row,
+    持仓明细: openLines,
+    所有持仓人: openLines.join("\n"),
+  };
+  if (rawHolders) {
+    next.holders = rawHolders.filter((h) => !isDustHoldPct(holderValuePct(h, mcap)));
+  }
+  return finalizeMergedRow(next);
+}
+
 function finalizeMergedRow(row) {
+  const mcap = row["市值"];
   const parsed = holderTipLines(row)
     .map((line) => {
       const p = parseHolderTipParts(line);
@@ -1282,11 +1500,12 @@ function finalizeMergedRow(row) {
         pnl: p.pnl ? parseNumber(p.pnl) : null,
       };
     })
+    .filter((x) => x.line && x.line !== "—" && !isDustHoldPct(holdLinePct(x.line, mcap)))
     .sort((a, b) => b.hold - a.hold);
+  if (!parsed.length) return null;
   const count = parsed.length;
   const total = parsed.reduce((sum, x) => sum + x.hold, 0);
   const pnlVals = parsed.map((x) => x.pnl).filter((n) => n != null);
-  const mcap = row["市值"];
   row["持仓人数"] = count;
   row["持仓市值"] = fmtHoldingWithMcapPct(total, mcap);
   row["人均持仓市值"] = fmtKm(count ? total / count : 0);
@@ -1301,6 +1520,9 @@ function finalizeMergedRow(row) {
   }
   row["所有持仓人"] = parsed.map((x) => x.line).join("\n");
   row["持仓明细"] = parsed.map((x) => x.line);
+  if (Array.isArray(row.holders)) {
+    row.holders = row.holders.filter((h) => !isDustHoldPct(holderValuePct(h, mcap)));
+  }
   return row;
 }
 
@@ -1325,8 +1547,11 @@ function mergeSummaryPayloads(payloads) {
       } else if (t > prevMeta.time) {
         const cloned = cloneTokenRow(row);
         cloned["合约地址"] = prevMeta.row["合约地址"] || cloned["合约地址"];
+        rememberClosedCount(cloned, prevMeta.row);
+        rememberClosedCount(cloned, row);
         tokenMeta.set(key, { time: t, row: cloned });
       } else {
+        rememberClosedCount(prevMeta.row, row);
         for (const field of marketFields) {
           if (prevMeta.row[field] == null || prevMeta.row[field] === "") {
             prevMeta.row[field] = row[field];
@@ -1363,7 +1588,9 @@ function mergeSummaryPayloads(payloads) {
     row.holders = mergedHolders
       ? [...mergedHolders.values()].map((x) => ({ ...x.holder }))
       : row.holders || [];
-    rows.push(finalizeMergedRow(row));
+    const finalized = finalizeMergedRow(row);
+    if (!finalized) continue;
+    rows.push(finalized);
   }
   rows.sort((a, b) => (parseNumber(b["持仓市值"]) || 0) - (parseNumber(a["持仓市值"]) || 0));
   const stamps = (payloads || [])
@@ -1386,6 +1613,150 @@ function mergeSummaryPayloads(payloads) {
   };
 }
 
+function formatTableHolderCount(current, closed) {
+  const cur = current == null || String(current).trim() === "" ? "—" : String(current).trim();
+  const n = Number(closed);
+  const closedText = Number.isFinite(n) ? String(n) : "0";
+  return `${cur}/${closedText}`;
+}
+
+function formatTipHolderCount(current, closed) {
+  const cur = current == null || String(current).trim() === "" ? "—" : String(current).trim();
+  const n = Number(closed);
+  const closedText = Number.isFinite(n) ? String(n) : "0";
+  return `${cur}(${closedText})`;
+}
+
+function fmtHoldDuration(since, until) {
+  const start = createdAtMs(since);
+  if (!start) return "";
+  const end = until ? createdAtMs(until) : Date.now();
+  let secs = Math.floor(((end || 0) - start) / 1000);
+  if (!Number.isFinite(secs) || secs < 0) secs = 0;
+  const days = Math.floor(secs / 86400);
+  const hours = Math.floor((secs % 86400) / 3600);
+  const mins = Math.floor((secs % 3600) / 60);
+  return `[${String(days).padStart(2, "0")}:${String(hours).padStart(2, "0")}:${String(mins).padStart(2, "0")}]`;
+}
+
+function fmtTipPositionTime(value) {
+  const full = shortenTime(value);
+  if (!full || !/^\d{4}-\d{2}-\d{2} /.test(full)) return "";
+  return `[${full.slice(0, 4)}${full.slice(5, 7)}${full.slice(8, 10)} ${full.slice(11, 16)}]`;
+}
+
+function fmtPnlWithPct(pnlUsd, pnlPct) {
+  const amt = fmtSignedKm(pnlUsd);
+  if (!amt) return "";
+  if (pnlPct == null || pnlPct === "") return amt;
+  const pct = fmtPercent(pnlPct, true);
+  return pct ? `${amt}(${pct})` : amt;
+}
+
+function lookupClosedHolderRanks(holder) {
+  const ranks = { all: 0, "7d": 0, "24h": 0 };
+  if (typeof boardPayloads === "undefined" || !boardPayloads) return ranks;
+  const names = [holder?.name, holder?.handle]
+    .map((s) => String(s || "").trim().toLowerCase())
+    .filter(Boolean);
+  const boards = typeof SOURCE_BOARDS !== "undefined" ? SOURCE_BOARDS : ["all", "7d", "24h"];
+  for (const board of boards) {
+    const list = boardPayloads[board]?.traderRanks || boardPayloads[board]?.traders || [];
+    for (const t of list) {
+      const labels = [t?.name, t?.handle].map((s) => String(s || "").trim().toLowerCase());
+      if (names.some((n) => labels.includes(n))) {
+        ranks[board] = Number(t.rank) || 0;
+        break;
+      }
+    }
+  }
+  return ranks;
+}
+
+function lookupClosedHolderWho(holder) {
+  const name = String(holder?.name || holder?.handle || "").trim() || "—";
+  const ranks = lookupClosedHolderRanks(holder);
+  if (typeof isSummaryBoard === "function" && typeof activeBoard !== "undefined" && isSummaryBoard(activeBoard)) {
+    return formatSummaryHolderWho(name, ranks);
+  }
+  let board = "all";
+  if (typeof normalizeBoard === "function" && typeof activeBoard !== "undefined") {
+    board = normalizeBoard(activeBoard);
+  }
+  const rank = ranks[board] || 0;
+  return `${rank}.${name}`;
+}
+
+function closedHolderTipLine(holder, row) {
+  const who = lookupClosedHolderWho(holder);
+  const hold = fmtHoldingWithMcapPct(0, row && row["市值"]);
+  const pnl = fmtPnlWithPct(holder?.pnlUsd, holder?.pnlPct);
+  const dur = fmtHoldDuration(holder?.holdingSince, holder?.closedAt);
+  const upd = fmtTipPositionTime(holder?.closedAt);
+  return [who, hold, pnl, dur, upd].filter(Boolean).join(" ");
+}
+
+function mergeClosedHolderLines(openLines, closedHolders, row) {
+  const open = (openLines || [])
+    .map((x) => String(x || "").trim())
+    .filter((x) => x && x !== "—");
+  const seen = new Set(
+    open.map((line) =>
+      String((parseHolderTipParts(line).who || line).replace(/^(\d+\.)+/, "")).trim().toLowerCase()
+    )
+  );
+  const also = new Set(
+    (row?.holders || []).flatMap((h) =>
+      [h?.uid, h?.handle, h?.name].map((s) => String(s || "").trim().toLowerCase()).filter(Boolean)
+    )
+  );
+  const closed = [];
+  for (const h of closedHolders || []) {
+    const names = [h?.uid, h?.handle, h?.name]
+      .map((s) => String(s || "").trim().toLowerCase())
+      .filter(Boolean);
+    if (names.some((n) => seen.has(n) || also.has(n))) continue;
+    closed.push(closedHolderTipLine(h, row));
+  }
+  return {
+    open,
+    closed,
+    lines: [...open, ...closed],
+    currentCount: open.length,
+    closedCount: closed.length,
+  };
+}
+
+function paintTipClosedHolders(row, closedHolders) {
+  const box = rowTip?.querySelector(".row-tip-holders");
+  const head = rowTip?.querySelector(".row-tip-hold-head");
+  if (!box && !head) return;
+  const merged = mergeClosedHolderLines(holderTipLines(row), closedHolders, row);
+  const holdMcap =
+    row["持仓市值"] != null && String(row["持仓市值"]).trim() !== ""
+      ? rewritePercentsInText(String(row["持仓市值"]).trim())
+      : "—";
+  const holdPnl =
+    row["持仓盈亏"] != null && String(row["持仓盈亏"]).trim() !== ""
+      ? String(row["持仓盈亏"]).trim()
+      : "";
+  const countText = `${formatTipHolderCount(merged.currentCount, merged.closedCount)}人 · `;
+  if (head) {
+    head.innerHTML = `${escapeHtml(countText)}${wrapHoldPctHtml(holdMcap, parseHoldMcapPct(row))}${
+      holdPnl ? ` · <span class="num chg ${chgClass(holdPnl)}">${escapeHtml(holdPnl)}</span>` : ""
+    }`;
+  }
+  if (box) {
+    const total = merged.lines.length;
+    box.className = total > 10 ? "row-tip-holders is-scrollable-y" : "row-tip-holders";
+    const openHtml = merged.open.map((line) => renderHolderTipRow(line, { row })).join("");
+    const closedHtml = merged.closed.map((line) => renderHolderTipRow(line, { closed: true, row })).join("");
+    box.innerHTML = total
+      ? `<div class="row-tip-holder-grid">${openHtml}${closedHtml}</div>`
+      : `<div class="row-tip-holder">—</div>`;
+  }
+}
+
 function showRowTip(row, tr, clientX, clientY) {
   tipChartGen += 1;
   const name = row["名称"] || "—";
@@ -1393,8 +1764,10 @@ function showRowTip(row, tr, clientX, clientY) {
   const createdAt = shortenTime(row["创建时间"]) || "—";
   const ageDays = fmtAgeDays(row["创建时间"]);
   const createdText = ageDays ? `${createdAt} · ${ageDays}天` : createdAt;
-  const holderCount =
-    row["持仓人数"] != null && String(row["持仓人数"]).trim() !== ""
+  const holderLines = holderTipLines(row).filter((x) => x && x !== "—");
+  const holderCount = holderLines.length
+    ? holderLines.length
+    : row["持仓人数"] != null && String(row["持仓人数"]).trim() !== ""
       ? String(row["持仓人数"]).trim()
       : "—";
   const holdMcap =
@@ -1405,7 +1778,6 @@ function showRowTip(row, tr, clientX, clientY) {
     row["持仓盈亏"] != null && String(row["持仓盈亏"]).trim() !== ""
       ? String(row["持仓盈亏"]).trim()
       : "";
-  const holderLines = holderTipLines(row);
 
   tbody.querySelectorAll("tr.tip-active").forEach((el) => el.classList.remove("tip-active"));
   cardList?.querySelectorAll(".token-card.tip-active").forEach((el) => el.classList.remove("tip-active"));
@@ -1413,7 +1785,7 @@ function showRowTip(row, tr, clientX, clientY) {
   tipRowIndex = Number(tr.dataset.rowIdx);
 
   const holdersHtml = holderLines.length
-    ? `<div class="row-tip-holder-grid">${holderLines.map(renderHolderTipRow).join("")}</div>`
+    ? `<div class="row-tip-holder-grid">${holderLines.map((line) => renderHolderTipRow(line, { row })).join("")}</div>`
     : `<div class="row-tip-holder">—</div>`;
   const holdersClass =
     holderLines.length > 10 ? "row-tip-holders is-scrollable-y" : "row-tip-holders";
@@ -1430,11 +1802,11 @@ function showRowTip(row, tr, clientX, clientY) {
     <div class="row-tip-line"><span class="row-tip-label">平台</span>${escapeHtml(String(platform))}</div>
     <div class="row-tip-line"><span class="row-tip-label">创建时间</span>${escapeHtml(String(createdText))}</div>
     <div class="row-tip-line">
-      <span class="row-tip-label">持仓</span>${escapeHtml(`${holderCount}人 · ${holdMcap}`)}${
+      <span class="row-tip-label">持仓</span><span class="row-tip-hold-head">${escapeHtml(`${formatTipHolderCount(holderCount, 0)}人 · `)}${wrapHoldPctHtml(holdMcap, parseHoldMcapPct(row))}${
         holdPnl
           ? ` · <span class="num chg ${chgClass(holdPnl)}">${escapeHtml(holdPnl)}</span>`
           : ""
-      }
+      }</span>
       <div class="${holdersClass}">${holdersHtml}</div>
     </div>
     <div class="row-tip-chart" data-addr="${escapeHtml(addr)}">
@@ -1742,6 +2114,7 @@ function applyTipChartData(row, data, fallbackSeries) {
   redrawTipChart(els);
   if (els.fetched) els.fetched.textContent = tipChartFetchedText(data);
   if (els.status) els.status.textContent = tipChartStatusText(data, series);
+  if (Array.isArray(data?.closedHolders)) paintTipClosedHolders(row, data.closedHolders);
   return series;
 }
 
@@ -2016,6 +2389,18 @@ async function loadFavorites() {
     }
   } catch {
     favoriteAddrs = new Set();
+  }
+}
+
+async function loadWalletLinks() {
+  try {
+    const { res, data } = await fetchJson("/api/fomo-top20/wallets", { retries: 0 });
+    if (res.ok && data.ok) {
+      walletLinksByKey = indexWalletLinks(data.traders || []);
+      return;
+    }
+  } catch {
+    /* keep previous map */
   }
 }
 
@@ -2995,6 +3380,10 @@ document.addEventListener("click", (e) => {
 });
 
 rowTip.addEventListener("click", (e) => {
+  if (e.target.closest(".debot-link-btn")) {
+    e.stopPropagation();
+    return;
+  }
   e.stopPropagation();
   const fav = e.target.closest(".fav-btn");
   if (fav) {
@@ -3037,7 +3426,7 @@ document.addEventListener("visibilitychange", () => {
 });
 
 renderSortChips();
-Promise.all([loadSettings(), loadFavorites()]).then(() => {
+Promise.all([loadSettings(), loadFavorites(), loadWalletLinks()]).then(() => {
   refreshAuthStatus();
   selectBoard(activeBoard);
 });

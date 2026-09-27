@@ -18,6 +18,7 @@ from update_token_marketcap import (
     MD_PATH,
     fmt_holder_detail_line,
     fmt_holding_with_mcap_pct,
+    is_open_hold,
     fmt_km,
     load_cache,
     merge_ath,
@@ -724,15 +725,23 @@ def aggregate_rows(
     rows = []
     for key, holders in token_map.items():
         holders = sorted(holders, key=lambda h: h["rank"])
+        sample = holders[0]
+        addr = sample["tokenAddress"]
+        meta = meta_from_cache_or_holding(token_meta_cache, addr, holders)
+        current_mcap = float(meta.get("marketCap") or 0)
+        holders = [
+            h
+            for h in holders
+            if is_open_hold(h.get("value"), current_mcap or h.get("marketCap") or 0)
+        ]
+        if not holders:
+            continue
         total = sum(h["value"] for h in holders)
         count = len(holders)
         avg = total / count if count else 0
         hi = max(holders, key=lambda h: h["value"])
         lo = min(holders, key=lambda h: h["value"])
         sample = holders[0]
-        addr = sample["tokenAddress"]
-        meta = meta_from_cache_or_holding(token_meta_cache, addr, holders)
-        current_mcap = float(meta.get("marketCap") or 0)
         volume24 = float(meta.get("volume24") or 0)
         change24 = meta.get("change24")
         created_at = (meta.get("createdAt") or sample.get("createdAt") or "").strip()

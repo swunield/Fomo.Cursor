@@ -165,6 +165,51 @@ class BuildSeriesTests(unittest.TestCase):
         self.assertEqual(last["amount"], 0)
         self.assertEqual(last["pnl"], 30)  # sold 80 vs cost 50
 
+    def test_remainder_below_supply_pct_is_flat(self):
+        traders = _traders(
+            swaps=[
+                {
+                    "id": "s1",
+                    "createdAt": "2026-09-11T11:00:00Z",
+                    "outTokenAddress": TOKEN,
+                    "outHumanAmount": 100,
+                    "humanUsdAmountIn": 50,
+                    "humanUsdAmountOut": 50,
+                },
+                {
+                    "id": "s2",
+                    "createdAt": "2026-09-11T12:00:00Z",
+                    "inTokenAddress": TOKEN,
+                    "inHumanAmount": 99.5,
+                    "humanUsdAmountIn": 40,
+                    "humanUsdAmountOut": 40,
+                },
+            ]
+        )
+        # 0.5 / 10000 = 0.005% < 0.02%
+        series = build_series(TOKEN, circulating_supply=10000.0, traders=traders)
+        self.assertEqual(series[0]["holders"], 1)
+        self.assertEqual(series[1]["holders"], 0)
+        self.assertEqual(series[1]["amount"], 0)
+
+    def test_exactly_min_supply_pct_still_holds(self):
+        traders = _traders(
+            swaps=[
+                {
+                    "id": "s1",
+                    "createdAt": "2026-09-11T11:00:00Z",
+                    "outTokenAddress": TOKEN,
+                    "outHumanAmount": 2,
+                    "humanUsdAmountIn": 2,
+                    "humanUsdAmountOut": 2,
+                }
+            ]
+        )
+        # 2 / 10000 = 0.02%
+        series = build_series(TOKEN, circulating_supply=10000.0, traders=traders)
+        self.assertEqual(series[0]["holders"], 1)
+        self.assertEqual(series[0]["amount"], 2)
+
     def test_same_timestamp_keeps_last_snapshot(self):
         traders = _traders(
             swaps=[
@@ -354,6 +399,19 @@ class ParseBalanceTradeIdTests(unittest.TestCase):
         }
         self.assertIsNone(parse_balance_item(item))
 
+    def test_below_mcap_pct_is_not_an_open_hold(self):
+        item = {
+            "balance": {"tokenAddress": "So1AAA", "shiftedBalance": 1},
+            "tokenFilterResult": {
+                "priceUSD": "1",
+                "marketCap": "100000",
+                "token": {"symbol": "AAA", "address": "So1AAA"},
+            },
+            "activeTrade": {"id": "trade-1", "closedAt": None},
+        }
+        # value 1 / mcap 100000 = 0.001%
+        self.assertIsNone(parse_balance_item(item))
+
 
 class AggregateRowsHoldersTests(unittest.TestCase):
     def test_row_holders_keep_trade_id_and_csv_columns_unchanged(self):
@@ -389,6 +447,62 @@ class AggregateRowsHoldersTests(unittest.TestCase):
         self.assertEqual(rows[0]["holders"][0]["tradeUpdatedAt"], "2026-09-13T00:00:00Z")
         self.assertNotIn("holders", CSV_COLUMNS)
         self.assertIn("合约地址", CSV_COLUMNS)
+
+    def test_holder_below_mcap_pct_is_omitted(self):
+        from fomo_pipeline import aggregate_rows
+
+        token_map = {
+            "So1AAA": [
+                {
+                    "rank": 1,
+                    "name": "Alice",
+                    "handle": "alice",
+                    "uid": "u1",
+                    "tradeId": "t1",
+                    "amount": 10.0,
+                    "value": 1_000_000.0,
+                    "tokenAddress": "So1AAA",
+                    "symbol": "AAA",
+                    "marketCap": 10_000_000.0,
+                },
+                {
+                    "rank": 2,
+                    "name": "Bob",
+                    "handle": "bob",
+                    "uid": "u2",
+                    "tradeId": "t2",
+                    "amount": 1.0,
+                    "value": 500.0,
+                    "tokenAddress": "So1AAA",
+                    "symbol": "AAA",
+                    "marketCap": 10_000_000.0,
+                },
+            ]
+        }
+        rows = aggregate_rows(token_map, {}, {})
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["持仓人数"], 1)
+        self.assertNotIn("Bob", rows[0]["所有持仓人"])
+        self.assertEqual([h["name"] for h in rows[0]["holders"]], ["Alice"])
+
+    def test_token_with_only_dust_holders_is_omitted(self):
+        from fomo_pipeline import aggregate_rows
+
+        token_map = {
+            "So1BBB": [
+                {
+                    "rank": 2,
+                    "name": "Bob",
+                    "handle": "bob",
+                    "uid": "u2",
+                    "value": 500.0,
+                    "tokenAddress": "So1BBB",
+                    "symbol": "BBB",
+                    "marketCap": 10_000_000.0,
+                }
+            ]
+        }
+        self.assertEqual(aggregate_rows(token_map, {}, {}), [])
 
 
 class FetchTradeTests(unittest.TestCase):
@@ -774,6 +888,281 @@ class TokenChartApiTests(unittest.TestCase):
         self.assertEqual(res.status_code, 400)
         detail = res.json().get("detail") or ""
         self.assertTrue(any("\u4e00" <= ch <= "\u9fff" for ch in detail), detail)
+
+
+class ClosedHoldersFromCacheTests(unittest.TestCase):
+    def test_sold_out_trader_is_closed_with_last_sell_time(self):
+        from fomo_token_chart import closed_holders_from_cache
+
+        cache = empty_cache(TOKEN)
+        merge_fetched_trade(
+            cache,
+            {"uid": USER, "handle": "alice", "name": "Alice", "tradeId": "t1"},
+            {
+                "userId": USER,
+                "userHandle": "alice",
+                "displayName": "Alice",
+                "trade": {
+                    "id": "t1",
+                    "updatedAt": "2026-09-13T12:00:00Z",
+                    "closedAt": None,
+                    "userAddress": WALLET,
+                },
+                "swaps": [
+                    {
+                        "id": "s1",
+                        "createdAt": "2026-09-11T11:00:00Z",
+                        "outTokenAddress": TOKEN,
+                        "outHumanAmount": 100,
+                        "humanUsdAmountIn": 50,
+                        "humanUsdAmountOut": 50,
+                    },
+                    {
+                        "id": "s2",
+                        "createdAt": "2026-09-13T12:00:00Z",
+                        "inTokenAddress": TOKEN,
+                        "inHumanAmount": 100,
+                        "humanUsdAmountOut": 40,
+                        "humanUsdAmountIn": 40,
+                    },
+                ],
+                "transfers": [],
+            },
+        )
+        closed = closed_holders_from_cache(cache)
+        self.assertEqual(len(closed), 1)
+        self.assertEqual(closed[0]["uid"], USER)
+        self.assertEqual(closed[0]["handle"], "alice")
+        self.assertEqual(closed[0]["name"], "Alice")
+        self.assertEqual(closed[0]["closedAt"], "2026-09-13T12:00:00Z")
+        self.assertEqual(closed[0]["holdingSince"], "2026-09-11T11:00:00Z")
+        self.assertAlmostEqual(closed[0]["pnlUsd"], -10.0)
+
+    def test_still_holding_trader_is_not_closed(self):
+        from fomo_token_chart import closed_holders_from_cache
+
+        cache = empty_cache(TOKEN)
+        cache["traders"] = _traders(
+            swaps=[
+                {
+                    "id": "s1",
+                    "createdAt": "2026-09-11T11:00:00Z",
+                    "outTokenAddress": TOKEN,
+                    "outHumanAmount": 100,
+                    "humanUsdAmountIn": 50,
+                    "humanUsdAmountOut": 50,
+                }
+            ]
+        )
+        self.assertEqual(closed_holders_from_cache(cache), [])
+
+    def test_remainder_below_supply_pct_is_closed(self):
+        from fomo_token_chart import closed_holders_from_cache
+
+        cache = empty_cache(TOKEN)
+        cache["circulatingSupply"] = 10000.0
+        cache["traders"] = _traders(
+            swaps=[
+                {
+                    "id": "s1",
+                    "createdAt": "2026-09-11T11:00:00Z",
+                    "outTokenAddress": TOKEN,
+                    "outHumanAmount": 100,
+                    "humanUsdAmountIn": 50,
+                    "humanUsdAmountOut": 50,
+                },
+                {
+                    "id": "s2",
+                    "createdAt": "2026-09-13T12:00:00Z",
+                    "inTokenAddress": TOKEN,
+                    "inHumanAmount": 99.5,
+                    "humanUsdAmountIn": 40,
+                    "humanUsdAmountOut": 40,
+                },
+            ]
+        )
+        closed = closed_holders_from_cache(cache)
+        self.assertEqual(len(closed), 1)
+        self.assertEqual(closed[0]["name"], "Alice")
+        self.assertEqual(closed[0]["closedAt"], "2026-09-13T12:00:00Z")
+
+    def test_never_reached_min_pct_is_not_closed(self):
+        from fomo_token_chart import closed_holders_from_cache
+
+        cache = empty_cache(TOKEN)
+        cache["circulatingSupply"] = 10000.0
+        cache["traders"] = _traders(
+            swaps=[
+                {
+                    "id": "s1",
+                    "createdAt": "2026-09-11T11:00:00Z",
+                    "outTokenAddress": TOKEN,
+                    "outHumanAmount": 0.5,
+                    "humanUsdAmountIn": 1,
+                    "humanUsdAmountOut": 1,
+                }
+            ]
+        )
+        self.assertEqual(closed_holders_from_cache(cache), [])
+
+    def test_prefers_trade_closed_at_over_last_event(self):
+        from fomo_token_chart import closed_holders_from_cache
+
+        cache = empty_cache(TOKEN)
+        merge_fetched_trade(
+            cache,
+            {"uid": USER, "handle": "alice", "name": "Alice", "tradeId": "t1"},
+            {
+                "userId": USER,
+                "userHandle": "alice",
+                "displayName": "Alice",
+                "trade": {
+                    "id": "t1",
+                    "updatedAt": "2026-09-13T12:05:00Z",
+                    "closedAt": "2026-09-13T12:05:00Z",
+                    "userAddress": WALLET,
+                },
+                "swaps": [
+                    {
+                        "id": "s1",
+                        "createdAt": "2026-09-11T11:00:00Z",
+                        "outTokenAddress": TOKEN,
+                        "outHumanAmount": 10,
+                        "humanUsdAmountIn": 10,
+                        "humanUsdAmountOut": 10,
+                    },
+                    {
+                        "id": "s2",
+                        "createdAt": "2026-09-13T12:00:00Z",
+                        "inTokenAddress": TOKEN,
+                        "inHumanAmount": 10,
+                        "humanUsdAmountOut": 10,
+                        "humanUsdAmountIn": 10,
+                    },
+                ],
+                "transfers": [],
+            },
+        )
+        closed = closed_holders_from_cache(cache)
+        self.assertEqual(closed[0]["closedAt"], "2026-09-13T12:05:00Z")
+
+    def test_get_includes_closed_holders(self):
+        from fastapi.testclient import TestClient
+        import app as appmod
+
+        cache = empty_cache(TOKEN)
+        merge_fetched_trade(
+            cache,
+            {"uid": USER, "handle": "alice", "name": "Alice", "tradeId": "t1"},
+            {
+                "userId": USER,
+                "userHandle": "alice",
+                "displayName": "Alice",
+                "trade": {
+                    "id": "t1",
+                    "updatedAt": "2026-09-13T12:00:00Z",
+                    "closedAt": "2026-09-13T12:00:00Z",
+                    "userAddress": WALLET,
+                },
+                "swaps": [
+                    {
+                        "id": "s1",
+                        "createdAt": "2026-09-11T11:00:00Z",
+                        "outTokenAddress": TOKEN,
+                        "outHumanAmount": 10,
+                        "humanUsdAmountIn": 10,
+                        "humanUsdAmountOut": 10,
+                    },
+                    {
+                        "id": "s2",
+                        "createdAt": "2026-09-13T12:00:00Z",
+                        "inTokenAddress": TOKEN,
+                        "inHumanAmount": 10,
+                        "humanUsdAmountOut": 10,
+                        "humanUsdAmountIn": 10,
+                    },
+                ],
+                "transfers": [],
+            },
+        )
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            save_token_trades(TOKEN, cache, root=root)
+            with patch("fomo_token_chart.TRADES_DIR", root / "fomo_token_trades"):
+                client = TestClient(appmod.app)
+                res = client.get(
+                    "/api/fomo-top20/token-chart", params={"addr": TOKEN}
+                )
+        self.assertEqual(res.status_code, 200)
+        body = res.json()
+        closed = body.get("closedHolders") or []
+        self.assertEqual(len(closed), 1)
+        self.assertEqual(closed[0]["name"], "Alice")
+        self.assertEqual(closed[0]["closedAt"], "2026-09-13T12:00:00Z")
+
+    def test_format_display_rows_adds_closed_count_from_trade_cache(self):
+        from app import _format_display_rows
+
+        cache = empty_cache(TOKEN)
+        merge_fetched_trade(
+            cache,
+            {"uid": USER, "handle": "alice", "name": "Alice", "tradeId": "t1"},
+            {
+                "userId": USER,
+                "userHandle": "alice",
+                "displayName": "Alice",
+                "trade": {
+                    "id": "t1",
+                    "updatedAt": "2026-09-13T12:00:00Z",
+                    "closedAt": "2026-09-13T12:00:00Z",
+                    "userAddress": WALLET,
+                },
+                "swaps": [
+                    {
+                        "id": "s1",
+                        "createdAt": "2026-09-11T11:00:00Z",
+                        "outTokenAddress": TOKEN,
+                        "outHumanAmount": 10,
+                        "humanUsdAmountIn": 10,
+                        "humanUsdAmountOut": 10,
+                    },
+                    {
+                        "id": "s2",
+                        "createdAt": "2026-09-13T12:00:00Z",
+                        "inTokenAddress": TOKEN,
+                        "inHumanAmount": 10,
+                        "humanUsdAmountOut": 10,
+                        "humanUsdAmountIn": 10,
+                    },
+                ],
+                "transfers": [],
+            },
+        )
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            save_token_trades(TOKEN, cache, root=root)
+            with patch("fomo_token_chart.TRADES_DIR", root / "fomo_token_trades"):
+                rows = _format_display_rows(
+                    [
+                        {
+                            "名称": "AAA",
+                            "合约地址": TOKEN,
+                            "持仓人数": 3,
+                            "市值": "10M",
+                        }
+                    ]
+                )
+        self.assertEqual(rows[0]["持仓人数"], 3)
+        self.assertEqual(rows[0]["closedCount"], 1)
+
+    def test_format_display_rows_closed_count_zero_without_cache(self):
+        from app import _format_display_rows
+
+        rows = _format_display_rows(
+            [{"名称": "AAA", "合约地址": "SoNoChart", "持仓人数": 2}]
+        )
+        self.assertEqual(rows[0]["持仓人数"], 2)
+        self.assertEqual(rows[0]["closedCount"], 0)
 
 
 class TradesPathSafetyTests(unittest.TestCase):

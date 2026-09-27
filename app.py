@@ -21,7 +21,9 @@ from fomo_auth import (
     test_auth,
 )
 from fomo_token_chart import (
+    build_series,
     circulating_supply,
+    closed_holders_from_cache,
     load_token_trades,
     normalize_token_addr,
     refresh_token_chart,
@@ -29,6 +31,7 @@ from fomo_token_chart import (
 from fomo_google_login import login_status, request_cancel, start_google_login
 from fomo_oauth import complete_browser_google_oauth, parse_privy_callback, start_browser_google_oauth
 from fomo_favorites import load_favorites, toggle_favorite
+from fomo_wallet_link import load_wallet_links, resolve_all, wallet_public_view
 from fomo_pipeline import (
     FILTER_KEYS,
     is_cache_fresh,
@@ -56,6 +59,8 @@ _job: dict[str, Any] = {
 }
 _chart_lock = threading.Lock()
 _chart_jobs: dict[str, dict[str, Any]] = {}
+_wallet_lock = threading.Lock()
+_wallet_job: dict[str, Any] = {"status": "idle", "done": 0, "total": 0, "error": None}
 
 
 class AuthPayload(BaseModel):
@@ -110,6 +115,10 @@ class TokenChartRefreshPayload(BaseModel):
 
 class FavoriteTogglePayload(BaseModel):
     addr: str = ""
+
+
+class WalletRefreshPayload(BaseModel):
+    force: bool = False
 
 
 def _normalize_board(board: str | None) -> str:
@@ -168,6 +177,7 @@ def _format_display_rows(rows):
         sum_pnl_from_holder_text,
     )
 
+    closed_memo: dict[str, int] = {}
     out = []
     for row in rows or []:
         if not isinstance(row, dict):
@@ -202,8 +212,24 @@ def _format_display_rows(rows):
                 copied["持仓盈亏"] = fmt_holding_pnl(filled)
         elif copied.get("持仓盈亏") not in (None, ""):
             copied["持仓盈亏"] = fmt_holding_pnl(copied.get("持仓盈亏"))
+        copied["closedCount"] = _closed_count_for_addr(copied.get("合约地址"), closed_memo)
         out.append(copied)
     return out
+
+
+def _closed_count_for_addr(addr, memo: dict) -> int:
+    key = str(addr or "").strip()
+    if not key:
+        return 0
+    low = key.lower()
+    if low in memo:
+        return memo[low]
+    try:
+        n = len(closed_holders_from_cache(load_token_trades(key)))
+    except (TypeError, ValueError, OSError):
+        n = 0
+    memo[low] = n
+    return n
 
 
 def _relabel_board_text(value: str) -> str:
@@ -599,11 +625,16 @@ def token_chart(addr: str = Query(default="")):
         job = dict(_chart_jobs.get(key) or {})
     stats = cache.get("stats") or {}
     failed = int(stats.get("failed") or 0)
+    series = list(cache.get("series") or [])
+    if key and cache.get("traders"):
+        supply = float(cache.get("circulatingSupply") or 0)
+        series = build_series(key, supply, cache.get("traders") or {})
     body: dict[str, Any] = {
         "ok": True,
         "addr": addr,
         "lastFetchedAt": cache.get("lastFetchedAt"),
-        "series": cache.get("series") or [],
+        "series": series,
+        "closedHolders": closed_holders_from_cache(cache) if key else [],
         "running": job.get("status") == "running",
         "progress": {
             "fetched": int(job.get("fetched") or 0),
@@ -641,6 +672,43 @@ def token_chart_refresh(payload: TokenChartRefreshPayload):
         args=(addr, holders, circulating, token),
         daemon=True,
     ).start()
+    return {"ok": True, "started": True, "running": True}
+
+
+def _run_wallet_resolve(force: bool) -> None:
+    def progress(done: int, total: int) -> None:
+        with _wallet_lock:
+            _wallet_job["done"] = done
+            _wallet_job["total"] = total
+
+    try:
+        resolve_all(force=force, progress_fn=progress)
+        with _wallet_lock:
+            _wallet_job["status"] = "done"
+            _wallet_job["error"] = None
+    except Exception as exc:
+        with _wallet_lock:
+            _wallet_job["status"] = "error"
+            _wallet_job["error"] = str(exc)
+
+
+@app.get("/api/fomo-top20/wallets")
+def wallets_get():
+    with _wallet_lock:
+        job = dict(_wallet_job)
+    return wallet_public_view(load_wallet_links(), job)
+
+
+@app.post("/api/fomo-top20/wallets/refresh")
+def wallets_refresh(payload: WalletRefreshPayload | None = None):
+    if not get_access_token():
+        raise HTTPException(status_code=401, detail="未登录")
+    force = bool(payload.force) if payload else False
+    with _wallet_lock:
+        if _wallet_job.get("status") == "running":
+            return {"ok": False, "running": True}
+        _wallet_job.update(status="running", done=0, total=0, error=None)
+    threading.Thread(target=_run_wallet_resolve, args=(force,), daemon=True).start()
     return {"ok": True, "started": True, "running": True}
 
 

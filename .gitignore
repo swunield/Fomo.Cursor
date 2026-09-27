@@ -19,5 +19,7 @@ probe_*.py
 fomo_mcap_live_cache.json
 fomo_token_meta_cache.json
 fomo_token_trades/
+fomo_wallet_links.json
 fomo_favorites.json
+.bitquery_token
 .superpowers/

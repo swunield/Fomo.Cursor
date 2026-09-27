@@ -10,6 +10,9 @@
   --danger: #ff6b4a;
   --chg-up: #ff5a5a;
   --chg-down: #3dd68c;
+  --hold-pct-mid: #3dd68c;
+  --hold-pct-high: #f5a524;
+  --hold-pct-hot: #ff5a5a;
   --mono: "IBM Plex Mono", ui-monospace, monospace;
   --display: "Syne", sans-serif;
   --sidebar-w: 248px;
@@ -668,7 +671,7 @@ thead th.sortable.sorted {
 
 thead th .th-sort {
   display: inline-block;
-  min-width: 0.9em;
+  min-width: 1.7em;
   color: var(--muted);
   font-weight: 500;
 }
@@ -827,6 +830,23 @@ tbody tr.tip-active td {
   font-variant-numeric: tabular-nums;
 }
 
+.row-tip-holder-grid .tip-who {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.row-tip-holder-grid .tip-who .debot-holder-link-btn {
+  width: 18px;
+  height: 18px;
+  font-size: 11px;
+}
+
+.row-tip-holder-grid .tip-who-text {
+  min-width: 0;
+}
+
 .row-tip-holder {
   white-space: nowrap;
 }
@@ -834,6 +854,13 @@ tbody tr.tip-active td {
 .row-tip-holder-grid .tip-pnl.chg-up { color: var(--chg-up); font-weight: 600; }
 .row-tip-holder-grid .tip-pnl.chg-down { color: var(--chg-down); font-weight: 600; }
 .row-tip-holder-grid .tip-pnl.chg-flat { color: var(--muted); }
+.row-tip-holder-grid .row-tip-holder-row.is-closed .tip-who,
+.row-tip-holder-grid .row-tip-holder-row.is-closed .tip-who-text,
+.row-tip-holder-grid .row-tip-holder-row.is-closed .tip-hold,
+.row-tip-holder-grid .row-tip-holder-row.is-closed .tip-dur,
+.row-tip-holder-grid .row-tip-holder-row.is-closed .tip-upd {
+  color: var(--muted);
+}
 
 .row-tip-close {
   display: block;
@@ -980,6 +1007,15 @@ tbody tr.tip-active td {
 }
 
 td.num { font-variant-numeric: tabular-nums; color: #d7e8c8; }
+td.num.hold-pct-mid,
+.token-card-item dd.hold-pct-mid,
+.row-tip .hold-pct-mid { color: var(--hold-pct-mid); font-weight: 600; }
+td.num.hold-pct-high,
+.token-card-item dd.hold-pct-high,
+.row-tip .hold-pct-high { color: var(--hold-pct-high); font-weight: 600; }
+td.num.hold-pct-hot,
+.token-card-item dd.hold-pct-hot,
+.row-tip .hold-pct-hot { color: var(--hold-pct-hot); font-weight: 600; }
 
 .chg.chg-up { color: var(--chg-up); font-weight: 600; }
 .chg.chg-down { color: var(--chg-down); font-weight: 600; }

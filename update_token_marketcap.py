@@ -595,6 +595,30 @@ def fmt_change24(value):
     return fmt_percent(num, signed=True)
 
 
+# One holder's share of token mcap below this counts as flat (no position / closed).
+MIN_OPEN_HOLD_MCAP_PCT = 0.02
+
+
+def hold_mcap_pct(holding_value, market_cap):
+    holding = parse_number(holding_value)
+    mcap = parse_number(market_cap)
+    if holding is None or mcap is None or mcap <= 0:
+        return None
+    return holding / mcap * 100.0
+
+
+def is_open_hold(holding_value, market_cap) -> bool:
+    """False when this bag is below 0.02% of market cap.
+
+    That remainder is treated as no position or already closed.
+    Unknown market cap does not apply the cutoff.
+    """
+    pct = hold_mcap_pct(holding_value, market_cap)
+    if pct is None:
+        return True
+    return pct >= MIN_OPEN_HOLD_MCAP_PCT
+
+
 def fmt_holding_with_mcap_pct(holding_value, market_cap):
     holding = parse_number(holding_value)
     if holding is None:

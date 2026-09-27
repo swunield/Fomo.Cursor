@@ -33,6 +33,8 @@ class DeploySkipLocalDataTests(unittest.TestCase):
             "fomo_mcap_live_cache.json",
             "fomo_settings.json",
             "fomo_favorites.json",
+            "fomo_wallet_links.json",
+            ".bitquery_token",
             "fomo_top20_last_result.json",
             "fomo_7d50_last_result.json",
             "fomo_24h_last_result.json",

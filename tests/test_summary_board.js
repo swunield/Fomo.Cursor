@@ -93,6 +93,7 @@ const a = {
       合约地址: "So1AAA",
       持仓明细: ["1.Alice 1.0M(10.0%) +100K(+10%)", "2.Bob 500K(5.00%) -20K(-4%)"],
       所有持仓人: "1.Alice 1.0M(10.0%) +100K(+10%)\n2.Bob 500K(5.00%) -20K(-4%)",
+      closedCount: 4,
     },
   ],
 };
@@ -123,6 +124,7 @@ assertEqual(merged.rows.length, 2, "two tokens");
 const aaa = merged.rows.find((r) => r["合约地址"] === "So1AAA");
 assert(aaa, "AAA row");
 assertEqual(Number(aaa["持仓人数"]), 3, "Alice+Bob+Cara");
+assertEqual(aaa.closedCount, 4, "summary keeps closedCount from older board");
 assert(String(aaa["所有持仓人"]).includes("Cara"), "union includes Cara");
 assert(String(aaa["所有持仓人"]).includes("Alice"), "union includes Alice");
 assert(!String(aaa["所有持仓人"]).includes("1.Alice 1.0M"), "Alice uses newer 7d snapshot");
@@ -263,5 +265,54 @@ const eee = mergedHolders.rows.find((r) => r["合约地址"] === "So1EEE");
 assert(eee, "EEE row");
 assert(eee.holders && eee.holders.length, "EEE holders copied");
 assertEqual(eee.holders[0].tradeUpdatedAt, "2026-09-13T00:00:00Z", "merge keeps tradeUpdatedAt");
+
+const dustMerged = mergeSummaryPayloads([
+  {
+    board: "all",
+    generatedAt: "2026-09-13T03:00:00Z",
+    rows: [
+      {
+        名称: "DUST",
+        市值: "10.0M",
+        合约地址: "SoDust",
+        持仓明细: ["1.Alice 1.0M(10.0%) +100K(+10%)", "2.Bob 500(0.00%) +1(+1%)", "3.Cara 2K(0.02%)"],
+        holders: [
+          { name: "Alice", handle: "alice", value: 1_000_000 },
+          { name: "Bob", handle: "bob", value: 500 },
+          { name: "Cara", handle: "cara", value: 2000 },
+        ],
+      },
+      {
+        名称: "GONE",
+        市值: "10.0M",
+        合约地址: "SoGone",
+        持仓明细: ["2.Bob 500(0.00%)"],
+        holders: [{ name: "Bob", handle: "bob", value: 500 }],
+      },
+    ],
+  },
+]);
+const dustRow = dustMerged.rows.find((r) => r["合约地址"] === "SoDust");
+assert(dustRow, "DUST row kept");
+assertEqual(Number(dustRow["持仓人数"]), 2, "below 0.02% is not an open holder");
+assert(!String(dustRow["所有持仓人"]).includes("Bob"), "0.00% holder dropped");
+assert(String(dustRow["所有持仓人"]).includes("Cara"), "exactly 0.02% still counts");
+assert(!dustRow.holders.some((h) => h.name === "Bob"), "dust holder record dropped");
+assert(dustRow.holders.some((h) => h.name === "Cara"), "0.02% holder record kept");
+assert(!dustMerged.rows.some((r) => r["合约地址"] === "SoGone"), "only-dust token is absent");
+
+const stripped = withoutDustHolders({
+  市值: "10.0M",
+  持仓人数: 2,
+  持仓明细: ["1.Alice 1.0M(10.0%)", "2.Bob 500(0.00%)"],
+  所有持仓人: "1.Alice 1.0M(10.0%)\n2.Bob 500(0.00%)",
+  holders: [
+    { name: "Alice", value: 1_000_000 },
+    { name: "Bob", value: 500 },
+  ],
+});
+assertEqual(Number(stripped["持仓人数"]), 1, "single board drops sub-0.02% holder");
+assert(!String(stripped["所有持仓人"]).includes("Bob"), "single board holder text drops Bob");
+assertEqual(withoutDustHolders({ 市值: "10.0M", 持仓明细: ["2.Bob 500(0.00%)"] }), null, "only dust row removed");
 
 console.log("ok");

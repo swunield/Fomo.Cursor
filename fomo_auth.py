@@ -10,6 +10,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from update_token_marketcap import is_open_hold
+
 ROOT = Path(__file__).resolve().parent
 AUTH_PATH = ROOT / "fomo_auth.json"
 TOKEN_META_CACHE_PATH = ROOT / "fomo_token_meta_cache.json"
@@ -521,6 +523,9 @@ def parse_balance_item(item: dict) -> dict | None:
             return 0.0
 
     market_cap = _f(tfr.get("marketCap"))
+    # Below 0.02% of mcap is flat: no position, or already closed.
+    if not is_open_hold(value, market_cap):
+        return None
     volume24 = _f(tfr.get("volume24"))
     change24 = _f(tfr.get("change24"))
     launchpad = (token_meta.get("launchpad") or {}) if isinstance(token_meta, dict) else {}
