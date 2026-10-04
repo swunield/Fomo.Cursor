@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 import urllib.error
 import urllib.request
@@ -21,8 +22,17 @@ AMOUNT_REL = 0.002
 HOLD_REL = 0.005
 HOLD_AGREE_REL = 0.02
 MIN_HOLD_AMOUNT = 1.0
+MIN_BOARD_HOLD_VALUE = 200.0
 MAX_HOLD_QUERIES = 3
+EVM_HOLDER_VERIFY = 10
+EVM_HOLDER_BOOK_TOP = 40
 GECKO_MIN_INTERVAL = 2.6
+
+BOARD_HOLDINGS_FILES = (
+    "fomo_top20_holdings_by_token.json",
+    "fomo_7d50_holdings_by_token.json",
+    "fomo_24h_holdings_by_token.json",
+)
 
 # Quote assets. The fingerprint is the other leg of the swap.
 QUOTES = {
@@ -47,6 +57,8 @@ GECKO_NETWORK = {
     137: "polygon",
     8453: "base",
     42161: "arbitrum",
+    10: "optimism",
+    4663: "robinhood",
     101: "solana",
     1399811149: "solana",
 }
@@ -57,7 +69,35 @@ DEX_CHAIN = {
     "polygon": "polygon",
     "base": "base",
     "arbitrum": "arbitrum",
+    "optimism": "optimism",
     "solana": "solana",
+}
+
+# Same EVM address can be active on multiple chains. Probe these for reuse.
+EVM_CHAINS = (
+    {"network": "eth", "networkId": 1, "rpc": "https://ethereum.publicnode.com"},
+    {"network": "bsc", "networkId": 56, "rpc": "https://bsc-dataseed.binance.org"},
+    {"network": "base", "networkId": 8453, "rpc": "https://mainnet.base.org"},
+    {"network": "arbitrum", "networkId": 42161, "rpc": "https://arb1.arbitrum.io/rpc"},
+    {"network": "polygon", "networkId": 137, "rpc": "https://polygon-bor.publicnode.com"},
+    {"network": "optimism", "networkId": 10, "rpc": "https://mainnet.optimism.io"},
+    {
+        "network": "robinhood",
+        "networkId": 4663,
+        "rpc": "https://rpc.mainnet.chain.robinhood.com",
+    },
+)
+
+EVM_RPC_BY_NETWORK = {str(item["network"]): str(item["rpc"]) for item in EVM_CHAINS}
+NETWORK_ID_BY_NAME = {
+    "eth": 1,
+    "bsc": 56,
+    "polygon": 137,
+    "base": 8453,
+    "arbitrum": 42161,
+    "optimism": 10,
+    "robinhood": 4663,
+    "solana": 1399811149,
 }
 
 RPCS = (
@@ -89,6 +129,15 @@ def same_addr(left: str, right: str) -> bool:
     if a.lower().startswith("0x") or b.lower().startswith("0x"):
         return a.lower() == b.lower()
     return a == b
+
+
+def is_evm_address(addr: str) -> bool:
+    raw = str(addr or "").strip()
+    return raw.lower().startswith("0x") and len(raw) == 42
+
+
+def normalize_evm_address(addr: str) -> str:
+    return str(addr or "").strip().lower() if is_evm_address(addr) else ""
 
 
 def is_quote(addr: str) -> bool:
@@ -432,6 +481,188 @@ def _http_json(url: str, *, timeout: int = 30) -> Any:
         return json.loads(resp.read().decode())
 
 
+def _http_text(url: str, *, timeout: int = 40) -> str:
+    try:
+        from curl_cffi import requests as creq
+
+        resp = creq.get(
+            url,
+            timeout=timeout,
+            impersonate="chrome",
+            headers={"accept": "text/html,application/json", "user-agent": "FomoDesk/1.0"},
+        )
+        resp.raise_for_status()
+        return resp.text
+    except Exception:
+        req = urllib.request.Request(url, headers={"accept": "text/html", "user-agent": "FomoDesk/1.0"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.read().decode("utf-8", errors="replace")
+
+
+def _evm_rpc_json(rpc_url: str, method: str, params: list, *, timeout: int = 25) -> Any:
+    payload = {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}
+    try:
+        from curl_cffi import requests as creq
+
+        resp = creq.post(rpc_url, json=payload, timeout=timeout, impersonate="chrome")
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception:
+        body = json.dumps(payload).encode()
+        req = urllib.request.Request(
+            rpc_url,
+            data=body,
+            headers={"Content-Type": "application/json", "User-Agent": "FomoDesk/1.0"},
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode())
+    if isinstance(data, dict) and data.get("error"):
+        raise RuntimeError(str(data["error"])[:200])
+    return data.get("result") if isinstance(data, dict) else None
+
+
+def parse_udegen_holders(html: str, *, decimals: int = 18) -> list[dict]:
+    rows: dict[str, float] = {}
+    if not html:
+        return []
+    patterns = (
+        r'"address"\s*:\s*"(0x[a-fA-F0-9]{40})"[^}]{0,500}?"balance"\s*:\s*"(\d+)"',
+        r'"balance"\s*:\s*"(\d+)"[^}]{0,500}?"address"\s*:\s*"(0x[a-fA-F0-9]{40})"',
+    )
+    for idx, pattern in enumerate(patterns):
+        for match in re.finditer(pattern, html, re.S):
+            if idx == 0:
+                addr, raw = match.group(1), match.group(2)
+            else:
+                raw, addr = match.group(1), match.group(2)
+            owner = normalize_evm_address(addr)
+            try:
+                amount = int(raw) / (10 ** max(int(decimals), 0))
+            except (TypeError, ValueError):
+                continue
+            if not owner or amount <= 0:
+                continue
+            prev = rows.get(owner, 0.0)
+            if amount > prev:
+                rows[owner] = amount
+    return [{"owner": owner, "amount": amount} for owner, amount in rows.items()]
+
+
+def load_board_positions(root: Path | None = None) -> dict[str, dict]:
+    """Build trader positions from FOMO holdings-by-token exports."""
+    base = root if root is not None else ROOT
+    traders: dict[str, dict] = {}
+    for name in BOARD_HOLDINGS_FILES:
+        path = base / name
+        if not path.is_file():
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        for row in data.get("rows") or []:
+            if not isinstance(row, dict):
+                continue
+            token = str(row.get("合约地址") or row.get("tokenAddress") or "").strip()
+            network = str(row.get("debotChain") or row.get("network") or "").strip().lower()
+            if not token or not network:
+                continue
+            network_id = int(NETWORK_ID_BY_NAME.get(network) or 0)
+            token_name = str(row.get("名称") or row.get("name") or "")
+            for holder in row.get("holders") or []:
+                if not isinstance(holder, dict):
+                    continue
+                uid = str(holder.get("uid") or holder.get("userId") or "").strip()
+                if not uid:
+                    continue
+                amount = _human(holder.get("amount"))
+                value = _human(holder.get("value"))
+                if amount < MIN_HOLD_AMOUNT or value < MIN_BOARD_HOLD_VALUE:
+                    continue
+                rec = traders.setdefault(
+                    uid,
+                    {
+                        "userId": uid,
+                        "handle": holder.get("handle") or "",
+                        "displayName": holder.get("name") or holder.get("displayName") or "",
+                        "ledgerAddresses": set(),
+                        "swaps": [],
+                        "positions": [],
+                        "_pos_keys": {},
+                    },
+                )
+                if holder.get("handle"):
+                    rec["handle"] = holder["handle"]
+                if holder.get("name"):
+                    rec["displayName"] = holder["name"]
+                key = f"{network}:{token.lower() if token.startswith('0x') else token}"
+                prev = rec["_pos_keys"].get(key)
+                if prev and _human(prev.get("value")) >= value:
+                    continue
+                slot = {
+                    "token": token,
+                    "network": network,
+                    "networkId": network_id,
+                    "amount": amount,
+                    "swapAmount": amount,
+                    "value": value,
+                    "name": token_name,
+                    "source": "board",
+                }
+                rec["_pos_keys"][key] = slot
+    for rec in traders.values():
+        rows = list(rec.pop("_pos_keys", {}).values())
+        rows.sort(
+            key=lambda slot: (
+                _human(slot.get("value")),
+                _human(slot.get("amount")),
+            ),
+            reverse=True,
+        )
+        rec["positions"] = rows
+        rec["ledgerAddresses"] = set(rec.get("ledgerAddresses") or [])
+    return traders
+
+
+def merge_trader_positions(base: dict, extra: dict | None) -> dict:
+    """Prefer board amounts when the same token appears in both sources."""
+    if not extra:
+        return base
+    out = dict(base)
+    out["handle"] = extra.get("handle") or out.get("handle") or ""
+    out["displayName"] = extra.get("displayName") or out.get("displayName") or ""
+    keyed: dict[str, dict] = {}
+    for slot in list(out.get("positions") or []) + list(extra.get("positions") or []):
+        if not isinstance(slot, dict):
+            continue
+        token = str(slot.get("token") or "")
+        network = str(slot.get("network") or "")
+        if not token or not network:
+            continue
+        key = f"{network}:{token.lower() if token.startswith('0x') else token}"
+        prev = keyed.get(key)
+        if prev is None:
+            keyed[key] = dict(slot)
+            continue
+        # Prefer board source; else keep the larger absolute amount.
+        if slot.get("source") == "board" and prev.get("source") != "board":
+            keyed[key] = dict(slot)
+        elif prev.get("source") == "board" and slot.get("source") != "board":
+            continue
+        elif _human(slot.get("amount")) > _human(prev.get("amount")):
+            keyed[key] = dict(slot)
+    rows = list(keyed.values())
+    rows.sort(
+        key=lambda slot: (
+            _human(slot.get("value")),
+            max(_human(slot.get("amount")), _human(slot.get("swapAmount"))),
+        ),
+        reverse=True,
+    )
+    out["positions"] = rows
+    return out
+
+
 def _rpc(method: str, params: list, *, retries: int = 1, urls: tuple[str, ...] | None = None) -> Any:
     body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).encode()
     last: Exception | dict | None = None
@@ -460,8 +691,10 @@ class ChainClient:
         self.sleep_sec = sleep_sec
         self._gecko_at = 0.0
         self._gecko_cache: dict[tuple, list] = {}
-        self._dex_cache: dict[str, list] = {}
         self._holders: dict[str, list] = {}
+        self._evm_holders: dict[tuple[str, str], list] = {}
+        self._decimals: dict[tuple[str, str], int] = {}
+        self._dex_cache: dict[str, list] = {}
 
     def _gecko_wait(self) -> None:
         gap = self.sleep_sec - (time.time() - self._gecko_at)
@@ -588,6 +821,109 @@ class ChainClient:
         self._holders[key] = rows
         return rows
 
+    def evm_rpc(self, network: str) -> str:
+        return EVM_RPC_BY_NETWORK.get(str(network or "").strip().lower(), "")
+
+    def token_decimals(self, token: str, network: str) -> int:
+        key = (normalize_evm_address(token) or str(token or "").strip(), str(network or "").strip().lower())
+        if key in self._decimals:
+            return self._decimals[key]
+        rpc = self.evm_rpc(key[1])
+        if not rpc or not key[0].startswith("0x"):
+            self._decimals[key] = 18
+            return 18
+        try:
+            raw = _evm_rpc_json(rpc, "eth_call", [{"to": key[0], "data": "0x313ce567"}, "latest"])
+            decimals = int(raw, 16) if isinstance(raw, str) else 18
+        except Exception:
+            decimals = 18
+        self._decimals[key] = decimals
+        return decimals
+
+    def token_balance(self, token: str, owner: str, network: str) -> float:
+        token_addr = normalize_evm_address(token)
+        owner_addr = normalize_evm_address(owner)
+        rpc = self.evm_rpc(network)
+        if not token_addr or not owner_addr or not rpc:
+            return 0.0
+        data = "0x70a08231" + owner_addr[2:].rjust(64, "0")
+        try:
+            raw = _evm_rpc_json(rpc, "eth_call", [{"to": token_addr, "data": data}, "latest"])
+            amount = int(raw, 16) if isinstance(raw, str) else 0
+        except Exception:
+            return 0.0
+        decimals = self.token_decimals(token_addr, network)
+        return amount / (10 ** decimals) if decimals >= 0 else float(amount)
+
+    def evm_holders(self, token: str, network: str) -> list[dict]:
+        token_addr = normalize_evm_address(token)
+        net = str(network or "").strip().lower()
+        if not token_addr or not net:
+            return []
+        cache_key = (token_addr, net)
+        if cache_key in self._evm_holders:
+            return self._evm_holders[cache_key]
+        decimals = self.token_decimals(token_addr, net)
+        url = f"https://udegen.io/{net}/{token_addr}"
+        try:
+            html = _http_text(url, timeout=45)
+            rows = parse_udegen_holders(html, decimals=decimals)
+        except Exception:
+            rows = []
+        self._evm_holders[cache_key] = rows
+        return rows
+
+    def live_evm_holders(self, token: str, network: str, target: float) -> list[dict]:
+        """Rank uDegen holders by closeness, then confirm with live balanceOf."""
+        return self.holder_book(token, network, [target] if target > 0 else [])
+
+    def holder_book(self, token: str, network: str, targets: list[float] | None = None) -> list[dict]:
+        """Shared on-chain holder book for one token (Solana largest / EVM live balances)."""
+        net = str(network or "").strip().lower()
+        if net == "solana":
+            return self.largest_holders(token)
+        if not is_evm_address(token):
+            return []
+        approx = self.evm_holders(token, net)
+        if not approx:
+            return []
+        candidates: list[str] = []
+        seen: set[str] = set()
+
+        def _add(owner: str) -> None:
+            addr = normalize_evm_address(owner)
+            if not addr or addr in seen:
+                return
+            seen.add(addr)
+            candidates.append(addr)
+
+        for row in sorted(approx, key=lambda item: _human(item.get("amount")), reverse=True)[:EVM_HOLDER_BOOK_TOP]:
+            _add(str(row.get("owner") or ""))
+        for target in targets or []:
+            if target <= 0:
+                continue
+            ranked = sorted(
+                approx,
+                key=lambda row: abs(_human(row.get("amount")) - target)
+                / max(target, _human(row.get("amount")), 1.0),
+            )
+            for row in ranked[:EVM_HOLDER_VERIFY]:
+                _add(str(row.get("owner") or ""))
+        live: list[dict] = []
+        for owner in candidates:
+            amount = self.token_balance(token, owner, net)
+            if amount > 0:
+                live.append({"owner": owner, "amount": amount})
+        return live
+
+    def holders_for(self, token: str, network: str, target: float = 0.0) -> list[dict]:
+        net = str(network or "").strip().lower()
+        if net == "solana":
+            return self.largest_holders(token)
+        if is_evm_address(token):
+            return self.live_evm_holders(token, net, target)
+        return []
+
 
 def _largest_ui(account: dict) -> float:
     if not isinstance(account, dict):
@@ -647,33 +983,59 @@ def match_balance(holders: list[dict], target: float, limit: float = HOLD_REL) -
 
 
 def _solana_positions(trader: dict) -> list[dict]:
+    return [slot for slot in _matchable_positions(trader) if slot.get("network") == "solana"]
+
+
+def _matchable_positions(trader: dict) -> list[dict]:
     rows = []
     for slot in trader.get("positions") or []:
-        if not isinstance(slot, dict) or slot.get("network") != "solana":
+        if not isinstance(slot, dict):
+            continue
+        network = str(slot.get("network") or "").strip().lower()
+        token = str(slot.get("token") or "").strip()
+        if network == "solana":
+            pass
+        elif network and is_evm_address(token):
+            pass
+        else:
             continue
         amount = _human(slot.get("amount"))
         swap_amount = _human(slot.get("swapAmount"))
         if max(amount, swap_amount) < MIN_HOLD_AMOUNT:
             continue
         rows.append(slot)
-    rows.sort(key=lambda slot: max(_human(slot.get("amount")), _human(slot.get("swapAmount"))), reverse=True)
+    rows.sort(
+        key=lambda slot: (
+            _human(slot.get("value")),
+            max(_human(slot.get("amount")), _human(slot.get("swapAmount"))),
+        ),
+        reverse=True,
+    )
     return rows[:MAX_HOLD_QUERIES]
 
 
 def resolve_holdings(trader: dict, client: ChainClient) -> tuple[dict | None, str]:
-    positions = _solana_positions(trader)
+    positions = _matchable_positions(trader)
     if not positions:
         return None, ""
     votes: dict[str, list[tuple[dict, dict, str]]] = {}
     last_reason = "no_balance_match"
     for pos in positions:
+        network = str(pos.get("network") or "").strip().lower()
+        amount = _human(pos.get("amount"))
+        swap_amount = _human(pos.get("swapAmount"))
+        target = amount if amount >= MIN_HOLD_AMOUNT else swap_amount
         try:
-            holders = client.largest_holders(pos["token"])
+            if hasattr(client, "holders_for"):
+                holders = client.holders_for(pos["token"], network, target)
+            elif network == "solana":
+                holders = client.largest_holders(pos["token"])
+            else:
+                last_reason = "unsupported_network"
+                continue
         except Exception:
             last_reason = "rpc_failed"
             continue
-        amount = _human(pos.get("amount"))
-        swap_amount = _human(pos.get("swapAmount"))
         hit, reason = (None, "no_balance_match")
         source = "holding"
         if amount >= MIN_HOLD_AMOUNT:
@@ -717,11 +1079,12 @@ def resolve_holdings(trader: dict, client: ChainClient) -> tuple[dict | None, st
     else:
         return None, "ambiguous_balance" if len(votes) > 1 else last_reason
     pos, hit, source = votes[owner][0]
+    network = str(pos.get("network") or "solana").strip().lower()
     return (
         {
             "address": owner,
-            "network": "solana",
-            "networkId": int(pos.get("networkId") or 1399811149),
+            "network": network,
+            "networkId": int(pos.get("networkId") or NETWORK_ID_BY_NAME.get(network) or 0),
             "tx": "",
             "token": pos.get("token") or "",
             "amount": _human(pos.get("amount")) if source == "holding" else _human(pos.get("swapAmount")),
@@ -869,12 +1232,18 @@ def resolve_trader(trader: dict, client: ChainClient, now: float | None = None) 
             wallets.append(wallet)
         elif reason:
             reasons.append(reason)
-    if not any(item.get("network") == "solana" for item in wallets):
+    if not wallets:
         holding, hold_reason = resolve_holdings(trader, client)
         if holding:
             wallets.append(holding)
         elif hold_reason:
             reasons.append(hold_reason)
+    elif not any(item.get("network") == "solana" for item in wallets):
+        holding, hold_reason = resolve_holdings(trader, client)
+        if holding and holding.get("network") == "solana":
+            wallets.append(holding)
+    if wallets:
+        wallets = expand_evm_wallets(wallets)
     if not fingers and not wallets and not reasons:
         reasons.append("no_swaps")
     return {
@@ -936,6 +1305,186 @@ def resolve_all(
     return cache
 
 
+def resolve_network_name(network: str | None, token: str | None = None) -> str:
+    net = str(network or "").strip().lower()
+    if net in NETWORK_ID_BY_NAME:
+        return net
+    if is_evm_address(token or ""):
+        return ""
+    token_s = str(token or "").strip()
+    if token_s and not token_s.lower().startswith("0x"):
+        return "solana"
+    return net
+
+
+def _tip_holder_already_matched(row: dict | None, network: str) -> bool:
+    if not isinstance(row, dict) or row.get("status") != "matched":
+        return False
+    net = str(network or "").strip().lower()
+    for wallet in row.get("wallets") or []:
+        if not isinstance(wallet, dict) or not wallet.get("address"):
+            continue
+        if not net or str(wallet.get("network") or "").strip().lower() == net:
+            return True
+    return False
+
+
+def resolve_tip_holder_wallets(
+    token: str,
+    network: str,
+    holders: list[dict],
+    *,
+    path: Path | None = None,
+    client: ChainClient | None = None,
+    force: bool = False,
+    expand: bool = True,
+) -> dict:
+    """Match tip holders for one token by current balance; update wallet cache."""
+    token_addr = str(token or "").strip()
+    net = resolve_network_name(network, token_addr)
+    cache = load_wallet_links(path)
+    stored = cache.setdefault("traders", {})
+    client = client or ChainClient()
+    if not token_addr or not net:
+        return {
+            "ok": False,
+            "error": "unsupported_network",
+            "token": token_addr,
+            "network": net,
+            "matched": 0,
+            "traders": [],
+        }
+
+    work: list[dict] = []
+    targets: list[float] = []
+    for holder in holders or []:
+        if not isinstance(holder, dict):
+            continue
+        uid = str(holder.get("uid") or holder.get("userId") or "").strip()
+        amount = _human(holder.get("amount"))
+        if not uid or amount < MIN_HOLD_AMOUNT:
+            continue
+        prev = stored.get(uid)
+        if not force and _tip_holder_already_matched(prev, net):
+            continue
+        work.append(
+            {
+                "userId": uid,
+                "handle": holder.get("handle") or (prev or {}).get("handle") or "",
+                "displayName": holder.get("name")
+                or holder.get("displayName")
+                or (prev or {}).get("displayName")
+                or "",
+                "amount": amount,
+                "value": _human(holder.get("value")),
+            }
+        )
+        targets.append(amount)
+
+    book: list[dict] = []
+    book_error = ""
+    if work:
+        try:
+            book = client.holder_book(token_addr, net, targets)
+        except Exception as exc:
+            book_error = str(exc)[:200]
+            book = []
+
+    used_owners: set[str] = set()
+    matched_uids: list[str] = []
+    for item in sorted(work, key=lambda row: row["amount"], reverse=True):
+        uid = item["userId"]
+        candidates = [
+            row
+            for row in book
+            if str(row.get("owner") or "") not in used_owners
+        ]
+        hit, reason = match_balance(candidates, item["amount"], HOLD_REL)
+        if not hit:
+            hit, reason = match_balance(candidates, item["amount"], HOLD_AGREE_REL)
+            if hit:
+                reason = ""
+        prev = stored.get(uid)
+        if not isinstance(prev, dict):
+            prev = {
+                "userId": uid,
+                "handle": item["handle"],
+                "displayName": item["displayName"],
+                "ledgerAddresses": [],
+                "wallets": [],
+                "status": "unresolved",
+                "reason": "",
+            }
+        if item["handle"]:
+            prev["handle"] = item["handle"]
+        if item["displayName"]:
+            prev["displayName"] = item["displayName"]
+        if not hit:
+            prev["holdingReason"] = reason or book_error or "no_balance_match"
+            stored[uid] = prev
+            continue
+        owner = str(hit["owner"])
+        used_owners.add(owner)
+        wallet = {
+            "address": owner,
+            "network": net,
+            "networkId": int(NETWORK_ID_BY_NAME.get(net) or 0),
+            "tx": "",
+            "token": token_addr,
+            "amount": item["amount"],
+            "chainAmount": hit["amount"],
+            "side": "hold",
+            "method": "holding",
+            "matchedTokens": 1,
+        }
+        others = [
+            w
+            for w in (prev.get("wallets") or [])
+            if isinstance(w, dict)
+            and w.get("address")
+            and not (
+                same_addr(w.get("address") or "", owner)
+                and str(w.get("network") or "").strip().lower() == net
+            )
+        ]
+        wallets = others + [wallet]
+        if expand and is_evm_address(owner):
+            wallets = expand_evm_wallets(wallets)
+        prev["wallets"] = wallets
+        prev["status"] = "matched"
+        prev["reason"] = ""
+        prev.pop("holdingReason", None)
+        stored[uid] = prev
+        matched_uids.append(uid)
+
+    cache["updatedAt"] = datetime.now(timezone.utc).isoformat()
+    if matched_uids:
+        cache["finishedAt"] = cache["updatedAt"]
+    save_wallet_links(cache, path)
+
+    traders = []
+    for holder in holders or []:
+        if not isinstance(holder, dict):
+            continue
+        uid = str(holder.get("uid") or holder.get("userId") or "").strip()
+        if not uid:
+            continue
+        row = stored.get(uid)
+        if isinstance(row, dict):
+            traders.append(row)
+    return {
+        "ok": True,
+        "token": token_addr,
+        "network": net,
+        "matched": len(matched_uids),
+        "checked": len(work),
+        "bookSize": len(book),
+        "error": book_error,
+        "traders": traders,
+        "updatedAt": cache.get("updatedAt"),
+    }
+
+
 def resolve_holdings_all(
     *,
     root: Path | None = None,
@@ -943,13 +1492,29 @@ def resolve_holdings_all(
     client: ChainClient | None = None,
     force: bool = False,
     progress_fn: Callable[[int, int], None] | None = None,
+    board_root: Path | None = None,
 ) -> dict:
-    """Fill wallets from current Solana balances. Leaves an existing match in place."""
+    """Fill wallets from current Solana/EVM balances. Leaves an existing match in place."""
     traders = load_traders(root)
+    board = load_board_positions(board_root if board_root is not None else (root or ROOT))
+    for uid, extra in board.items():
+        traders[uid] = merge_trader_positions(traders.get(uid) or {
+            "userId": uid,
+            "handle": "",
+            "displayName": "",
+            "ledgerAddresses": set(),
+            "swaps": [],
+            "positions": [],
+        }, extra)
     cache = load_wallet_links(path)
     stored = cache.setdefault("traders", {})
     client = client or ChainClient()
-    items = list(traders.items())
+    # Prefer high board value first so distinctive whales resolve early and share token caches.
+    items = sorted(
+        traders.items(),
+        key=lambda kv: max((_human(p.get("value")) for p in (kv[1].get("positions") or [])), default=0.0),
+        reverse=True,
+    )
     total = len(items)
     done = 0
     for uid, trader in items:
@@ -971,7 +1536,7 @@ def resolve_holdings_all(
             prev["displayName"] = trader["displayName"]
         already = [
             item for item in (prev.get("wallets") or [])
-            if isinstance(item, dict) and item.get("network") == "solana" and item.get("address")
+            if isinstance(item, dict) and item.get("address")
         ]
         if not force and prev.get("status") == "matched" and already:
             stored[uid] = prev
@@ -984,11 +1549,17 @@ def resolve_holdings_all(
             holding, reason = None, "error"
             prev["error"] = str(exc)[:200]
         if holding:
+            net = str(holding.get("network") or "")
             others = [
                 item for item in (prev.get("wallets") or [])
-                if isinstance(item, dict) and item.get("network") != "solana"
+                if isinstance(item, dict)
+                and item.get("address")
+                and not (
+                    same_addr(item.get("address") or "", holding.get("address") or "")
+                    and str(item.get("network") or "") == net
+                )
             ]
-            prev["wallets"] = others + [holding]
+            prev["wallets"] = expand_evm_wallets(others + [holding])
             prev["status"] = "matched"
             prev["reason"] = ""
             prev.pop("holdingReason", None)
@@ -1001,6 +1572,126 @@ def resolve_holdings_all(
             progress_fn(done, total)
     cache["finishedAt"] = datetime.now(timezone.utc).isoformat()
     cache["updatedAt"] = cache["finishedAt"]
+    save_wallet_links(cache, path)
+    return cache
+
+
+def _evm_rpc(rpc_url: str, method: str, params: list) -> Any:
+    body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).encode()
+    req = urllib.request.Request(
+        rpc_url,
+        data=body,
+        headers={"Content-Type": "application/json", "User-Agent": "FomoDesk/1.0"},
+    )
+    with urllib.request.urlopen(req, timeout=25) as resp:
+        data = json.loads(resp.read().decode())
+    if data.get("error"):
+        raise RuntimeError(str(data["error"])[:200])
+    return data.get("result")
+
+
+def evm_chain_active(address: str, rpc_url: str) -> bool:
+    """True when the address has sent txs or holds native balance on this RPC."""
+    addr = normalize_evm_address(address)
+    if not addr or not rpc_url:
+        return False
+    try:
+        nonce_hex = _evm_rpc(rpc_url, "eth_getTransactionCount", [addr, "latest"])
+        nonce = int(nonce_hex, 16) if isinstance(nonce_hex, str) else int(nonce_hex or 0)
+        if nonce > 0:
+            return True
+        bal_hex = _evm_rpc(rpc_url, "eth_getBalance", [addr, "latest"])
+        balance = int(bal_hex, 16) if isinstance(bal_hex, str) else int(bal_hex or 0)
+        return balance > 0
+    except Exception:
+        return False
+
+
+def collect_evm_seed_addresses(wallets: list) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for wallet in wallets or []:
+        if not isinstance(wallet, dict):
+            continue
+        addr = normalize_evm_address(wallet.get("address") or "")
+        if not addr or addr in seen:
+            continue
+        seen.add(addr)
+        out.append(addr)
+    return out
+
+
+def expand_evm_wallets(
+    wallets: list,
+    *,
+    probe_fn: Callable[[str, str], bool] | None = None,
+    chains: tuple[dict, ...] = EVM_CHAINS,
+) -> list[dict]:
+    """Fill same EVM address onto other chains that show activity."""
+    probe = probe_fn or evm_chain_active
+    current = [item for item in (wallets or []) if isinstance(item, dict)]
+    known = {
+        (normalize_evm_address(item.get("address") or ""), str(item.get("network") or "").strip())
+        for item in current
+        if is_evm_address(item.get("address") or "")
+    }
+    seeds = collect_evm_seed_addresses(current)
+    added: list[dict] = []
+    for addr in seeds:
+        for chain in chains:
+            network = str(chain.get("network") or "").strip()
+            if not network or (addr, network) in known:
+                continue
+            rpc = str(chain.get("rpc") or "").strip()
+            if not probe(addr, rpc):
+                continue
+            row = {
+                "address": addr,
+                "network": network,
+                "networkId": int(chain.get("networkId") or 0),
+                "tx": "",
+                "token": "",
+                "amount": 0,
+                "side": "hold",
+                "method": "evm_activity",
+            }
+            current.append(row)
+            added.append(row)
+            known.add((addr, network))
+    return current
+
+
+def expand_evm_links_all(
+    *,
+    path: Path | None = None,
+    probe_fn: Callable[[str, str], bool] | None = None,
+    progress_fn: Callable[[int, int], None] | None = None,
+) -> dict:
+    """Expand cached EVM wallets across chains with on-chain activity."""
+    cache = load_wallet_links(path)
+    stored = cache.setdefault("traders", {})
+    items = [
+        (uid, row)
+        for uid, row in stored.items()
+        if isinstance(row, dict) and row.get("status") == "matched" and collect_evm_seed_addresses(row.get("wallets") or [])
+    ]
+    total = len(items)
+    done = 0
+    expanded = 0
+    for uid, row in items:
+        done += 1
+        before = len(row.get("wallets") or [])
+        row["wallets"] = expand_evm_wallets(row.get("wallets") or [], probe_fn=probe_fn)
+        if len(row["wallets"]) > before:
+            expanded += 1
+        stored[uid] = row
+        cache["updatedAt"] = datetime.now(timezone.utc).isoformat()
+        save_wallet_links(cache, path)
+        if progress_fn:
+            progress_fn(done, total)
+    cache["finishedAt"] = datetime.now(timezone.utc).isoformat()
+    cache["updatedAt"] = cache["finishedAt"]
+    cache["evmExpanded"] = expanded
     save_wallet_links(cache, path)
     return cache
 

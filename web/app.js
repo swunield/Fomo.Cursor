@@ -963,8 +963,8 @@ function debotAddressUrl(address, network) {
   return `https://debot.ai/address/${encodeURIComponent(chain)}/${encodeURIComponent(addr)}`;
 }
 
-function indexWalletLinks(traders) {
-  const out = new Map();
+function indexWalletLinks(traders, baseMap) {
+  const out = baseMap instanceof Map ? new Map(baseMap) : new Map();
   const add = (key, wallets) => {
     const k = String(key || "").trim().toLowerCase();
     if (!k || !wallets?.length) return;
@@ -985,6 +985,57 @@ function indexWalletLinks(traders) {
     add(trader.displayName, wallets);
   }
   return out;
+}
+
+function mergeWalletLinks(traders) {
+  walletLinksByKey = indexWalletLinks(traders, walletLinksByKey);
+}
+
+function repaintTipHolderLinks(row) {
+  if (!rowTip || rowTip.hidden) return;
+  const box = rowTip.querySelector(".row-tip-holders");
+  const closedHolders = box?._closedHolders || [];
+  if (closedHolders.length) {
+    paintTipClosedHolders(row, closedHolders);
+    return;
+  }
+  const lines = holderTipLines(row).filter((x) => x && x !== "—");
+  if (!box) return;
+  box.className = lines.length > 10 ? "row-tip-holders is-scrollable-y" : "row-tip-holders";
+  box.innerHTML = lines.length
+    ? `<div class="row-tip-holder-grid">${lines.map((line) => renderHolderTipRow(line, { row })).join("")}</div>`
+    : `<div class="row-tip-holder">—</div>`;
+}
+
+async function refreshTipHolderWallets(row) {
+  const addr = String(row?.["合约地址"] || "").trim();
+  if (!addr) return null;
+  const holders = (row.holders || []).map((h) => ({
+    uid: h?.uid || "",
+    handle: h?.handle || "",
+    name: h?.name || "",
+    amount: Number(h?.amount) || 0,
+    value: Number(h?.value) || 0,
+  }));
+  const { res, data } = await fetchJson("/api/fomo-top20/wallets/resolve-holders", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      addr,
+      debotChain: row?.debotChain || debotChainSlug(addr, row?.["发射平台"], row?.debotChain) || "",
+      platform: row?.["发射平台"] || "",
+      holders,
+    }),
+    retries: 0,
+  });
+  if (!res?.ok || !data?.ok) {
+    return data || null;
+  }
+  if (Array.isArray(data.traders)) {
+    mergeWalletLinks(data.traders);
+    repaintTipHolderLinks(row);
+  }
+  return data;
 }
 
 function pickHolderWallet(wallets, row) {
@@ -1731,6 +1782,7 @@ function paintTipClosedHolders(row, closedHolders) {
   const box = rowTip?.querySelector(".row-tip-holders");
   const head = rowTip?.querySelector(".row-tip-hold-head");
   if (!box && !head) return;
+  if (box) box._closedHolders = Array.isArray(closedHolders) ? closedHolders : [];
   const merged = mergeClosedHolderLines(holderTipLines(row), closedHolders, row);
   const holdMcap =
     row["持仓市值"] != null && String(row["持仓市值"]).trim() !== ""
@@ -2153,6 +2205,7 @@ async function refreshTipTokenChart(row) {
   const oldSeries = els.box?._series || [];
   if (els.button) els.button.disabled = true;
   try {
+    const walletPromise = refreshTipHolderWallets(row).catch(() => null);
     const { res, data } = await fetchJson("/api/fomo-top20/token-chart/refresh", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -2163,6 +2216,7 @@ async function refreshTipTokenChart(row) {
     if (err && !data?.started && !data?.running) {
       if (els.status) els.status.textContent = String(err);
       redrawTipChart(els);
+      await walletPromise;
       return;
     }
     if (data?.started || data?.running) {
@@ -2171,6 +2225,8 @@ async function refreshTipTokenChart(row) {
     } else if (data) {
       applyTipChartData(row, data, oldSeries);
     }
+    await walletPromise;
+    if (gen === tipChartGen) repaintTipHolderLinks(row);
   } catch (e) {
     if (gen !== tipChartGen) return;
     if (els.status) els.status.textContent = networkErrorMessage(e) || "刷新失败";

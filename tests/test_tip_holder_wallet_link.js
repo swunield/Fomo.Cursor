@@ -11,7 +11,11 @@ const css = fs.readFileSync(path.join(__dirname, "..", "web", "styles.css"), "ut
 assert(src.includes("function debotAddressUrl("), "debotAddressUrl missing");
 assert(src.includes("function debotHolderLinkButton("), "debotHolderLinkButton missing");
 assert(src.includes("function loadWalletLinks("), "loadWalletLinks missing");
+assert(src.includes("function refreshTipHolderWallets("), "tip wallet refresh missing");
+assert(src.includes("function mergeWalletLinks("), "mergeWalletLinks missing");
+assert(src.includes("function repaintTipHolderLinks("), "repaintTipHolderLinks missing");
 assert(src.includes("/api/fomo-top20/wallets"), "wallets API not loaded");
+assert(src.includes("/api/fomo-top20/wallets/resolve-holders"), "resolve-holders API not called");
 assert(src.includes("debot.ai/address/"), "address URL format missing");
 assert(src.includes("debot-holder-link-btn"), "holder link class missing");
 assert(
@@ -19,6 +23,7 @@ assert(
   "tip rows should pass row for wallet lookup"
 );
 assert(src.includes("loadWalletLinks()"), "startup should load wallet links");
+assert(src.includes("refreshTipHolderWallets(row)"), "chart refresh should resolve tip wallets");
 
 const pickStart = src.indexOf("function pickHolderWallet(");
 const pickEnd = src.indexOf("function lookupHolderWallets(");

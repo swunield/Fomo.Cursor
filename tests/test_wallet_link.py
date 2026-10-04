@@ -10,13 +10,18 @@ from unittest.mock import patch
 
 from fomo_wallet_link import (
     amount_close,
+    expand_evm_links_all,
+    expand_evm_wallets,
+    load_board_positions,
     load_traders,
     match_balance,
     match_pool_trades,
+    parse_udegen_holders,
     pick_fingerprints,
     resolve_all,
     resolve_holdings,
     resolve_holdings_all,
+    resolve_tip_holder_wallets,
     resolve_trader,
     save_wallet_links,
     swap_fingerprint,
@@ -440,6 +445,152 @@ class HoldingTests(unittest.TestCase):
             self.assertEqual(saved["traders"]["u1"]["wallets"][0]["address"], WALLET)
             self.assertEqual(saved["traders"]["u2"]["wallets"][0]["address"], "FoundWallet")
             self.assertEqual(saved["traders"]["u2"]["wallets"][0]["method"], "holding")
+
+
+class BoardHoldingTests(unittest.TestCase):
+    def test_parse_udegen_holders(self):
+        html = (
+            '{"address":"0x8f62a08537cede87d511aca6436274ab4ca080a3",'
+            '"balance":"29411650481949390000000000"}'
+        )
+        rows = parse_udegen_holders(html, decimals=18)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["owner"], "0x8f62a08537cede87d511aca6436274ab4ca080a3")
+        self.assertAlmostEqual(rows[0]["amount"], 29411650.48194939, places=4)
+
+    def test_board_positions_and_evm_holding_match(self):
+        addr = "0x8f62a08537cede87d511aca6436274ab4ca080a3"
+        token = "0x2e8c31162b855a2ffa90f6f8634643ad6f111e18"
+
+        class EvmHoldingClient:
+            def holders_for(self, mint: str, network: str, target: float = 0.0):
+                self.last = (mint, network, target)
+                return [
+                    {"owner": addr, "amount": 29411650.48194939},
+                    {"owner": "0x1111111111111111111111111111111111111111", "amount": 1000},
+                ]
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            payload = {
+                "rows": [
+                    {
+                        "名称": "AI",
+                        "合约地址": token,
+                        "debotChain": "robinhood",
+                        "holders": [
+                            {
+                                "uid": "u-ai",
+                                "handle": "DumbCrayonEater",
+                                "name": "DumbCrayonEater",
+                                "amount": 29411650.48,
+                                "value": 6860993.0,
+                            }
+                        ],
+                    }
+                ]
+            }
+            (root / "fomo_top20_holdings_by_token.json").write_text(
+                json.dumps(payload), encoding="utf-8"
+            )
+            board = load_board_positions(root)
+            self.assertIn("u-ai", board)
+            wallet, reason = resolve_holdings(board["u-ai"], EvmHoldingClient())
+            self.assertEqual(reason, "")
+            self.assertEqual(wallet["address"], addr)
+            self.assertEqual(wallet["network"], "robinhood")
+            self.assertEqual(wallet["method"], "holding")
+
+    def test_resolve_tip_holder_wallets_matches_unique_amount(self):
+        addr = "0x8f62a08537cede87d511aca6436274ab4ca080a3"
+        token = "0x2e8c31162b855a2ffa90f6f8634643ad6f111e18"
+
+        class TipClient:
+            def holder_book(self, mint, network, targets=None):
+                self.called = (mint, network, list(targets or []))
+                return [
+                    {"owner": addr, "amount": 29411650.48194939},
+                    {"owner": "0x1111111111111111111111111111111111111111", "amount": 1000},
+                ]
+
+        with TemporaryDirectory() as tmp:
+            cache_path = Path(tmp) / "fomo_wallet_links.json"
+            result = resolve_tip_holder_wallets(
+                token,
+                "robinhood",
+                [
+                    {
+                        "uid": "u-ai",
+                        "handle": "DumbCrayonEater",
+                        "name": "DumbCrayonEater",
+                        "amount": 29411650.48,
+                        "value": 6860993.0,
+                    }
+                ],
+                path=cache_path,
+                client=TipClient(),
+                expand=False,
+            )
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["matched"], 1)
+            saved = json.loads(cache_path.read_text(encoding="utf-8"))
+            row = saved["traders"]["u-ai"]
+            self.assertEqual(row["status"], "matched")
+            self.assertEqual(row["wallets"][0]["address"], addr)
+            self.assertEqual(row["wallets"][0]["method"], "holding")
+
+
+class EvmExpandTests(unittest.TestCase):
+    def test_expands_same_address_onto_active_chains(self):
+        addr = "0x370a7e2d300c14d79d4a7ee07aaca46c4b3012cf"
+        active = {"eth", "base", "bsc"}
+
+        def probe(address: str, rpc: str) -> bool:
+            mapping = {
+                "https://ethereum.publicnode.com": "eth",
+                "https://bsc-dataseed.binance.org": "bsc",
+                "https://mainnet.base.org": "base",
+                "https://arb1.arbitrum.io/rpc": "arbitrum",
+                "https://polygon-bor.publicnode.com": "polygon",
+                "https://mainnet.optimism.io": "optimism",
+                "https://rpc.mainnet.chain.robinhood.com": "robinhood",
+            }
+            return mapping.get(rpc) in active
+
+        wallets = expand_evm_wallets(
+            [{"address": addr, "network": "eth", "networkId": 1, "method": "swap"}],
+            probe_fn=probe,
+        )
+        nets = sorted(w["network"] for w in wallets)
+        self.assertEqual(nets, ["base", "bsc", "eth"])
+        self.assertTrue(all(w["address"] == addr for w in wallets))
+        added = [w for w in wallets if w.get("method") == "evm_activity"]
+        self.assertEqual(len(added), 2)
+
+    def test_expand_all_updates_cache(self):
+        addr = "0x666fedd4cdd4e890a5ad20e7b60975409435a64a"
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "fomo_wallet_links.json"
+            save_wallet_links(
+                {
+                    "traders": {
+                        "u1": {
+                            "userId": "u1",
+                            "handle": "Mirro7777",
+                            "status": "matched",
+                            "wallets": [{"address": addr, "network": "eth", "networkId": 1, "method": "bitquery"}],
+                        }
+                    }
+                },
+                path,
+            )
+
+            def probe(address: str, rpc: str) -> bool:
+                return "base.org" in rpc or "ethereum.publicnode.com" in rpc
+
+            cache = expand_evm_links_all(path=path, probe_fn=probe)
+            nets = sorted(w["network"] for w in cache["traders"]["u1"]["wallets"])
+            self.assertEqual(nets, ["base", "eth"])
 
 
 class WalletApiTests(unittest.TestCase):

@@ -31,9 +31,15 @@ from fomo_token_chart import (
 from fomo_google_login import login_status, request_cancel, start_google_login
 from fomo_oauth import complete_browser_google_oauth, parse_privy_callback, start_browser_google_oauth
 from fomo_favorites import load_favorites, toggle_favorite
-from fomo_wallet_link import load_wallet_links, resolve_all, wallet_public_view
+from fomo_wallet_link import (
+    load_wallet_links,
+    resolve_all,
+    resolve_tip_holder_wallets,
+    wallet_public_view,
+)
 from fomo_pipeline import (
     FILTER_KEYS,
+    debot_chain,
     is_cache_fresh,
     load_cached_result,
     load_settings,
@@ -119,6 +125,22 @@ class FavoriteTogglePayload(BaseModel):
 
 class WalletRefreshPayload(BaseModel):
     force: bool = False
+
+
+class WalletResolveHolder(BaseModel):
+    uid: str = ""
+    handle: str = ""
+    name: str = ""
+    amount: float = 0
+    value: float = 0
+
+
+class WalletResolveHoldersPayload(BaseModel):
+    addr: str = ""
+    debotChain: str = ""
+    platform: str = ""
+    force: bool = False
+    holders: list[WalletResolveHolder] = []
 
 
 def _normalize_board(board: str | None) -> str:
@@ -710,6 +732,44 @@ def wallets_refresh(payload: WalletRefreshPayload | None = None):
         _wallet_job.update(status="running", done=0, total=0, error=None)
     threading.Thread(target=_run_wallet_resolve, args=(force,), daemon=True).start()
     return {"ok": True, "started": True, "running": True}
+
+
+@app.post("/api/fomo-top20/wallets/resolve-holders")
+def wallets_resolve_holders(payload: WalletResolveHoldersPayload):
+    """Match tip holders to wallets by current token balance (board-amount method)."""
+    if not get_access_token():
+        raise HTTPException(status_code=401, detail="未登录")
+    addr = _safe_chart_addr(payload.addr or "", required=True)
+    network = debot_chain(
+        addr,
+        payload.platform or "",
+        chain_hint=payload.debotChain or "",
+    )
+    holders = [item.model_dump() for item in payload.holders]
+    with _wallet_lock:
+        result = resolve_tip_holder_wallets(
+            addr,
+            network,
+            holders,
+            force=bool(payload.force),
+        )
+    view = wallet_public_view(load_wallet_links())
+    result["stats"] = view.get("stats") or {}
+    # Return only traders touched by this tip for a lighter payload.
+    tip_uids = {
+        str(item.get("uid") or "").strip()
+        for item in holders
+        if str(item.get("uid") or "").strip()
+    }
+    if tip_uids:
+        result["traders"] = [
+            row
+            for row in (view.get("traders") or [])
+            if str(row.get("userId") or "") in tip_uids
+        ]
+    else:
+        result["traders"] = view.get("traders") or []
+    return result
 
 
 @app.get("/")
